@@ -8,6 +8,7 @@ from jsonparser import (
     UnknownTypeError,
     Validator,
     extract,
+    find_nodes_with_all,
     find_text,
     get_path,
     has_path,
@@ -216,6 +217,18 @@ def main() -> None:
     # (10) 다른 경로에도 적용 (expr 지정) — 위 order 샘플에서 'electronics' 찾기
     found, hits = struct_contains_text(sample, "electron", expr="$.order")
     print("order 안 'electron'    :", found, [m.path for m in hits])
+
+    # (11) 여러 문자열을 '동시에' 가진 노드 찾기 (find_nodes_with_all)
+    both = {
+        "a": {"title": "wow deal", "code": "vmv-1"},           # 둘 다
+        "b": {"title": "wow only"},                             # wow 만 → 제외
+        "c": {"items": [{"t": "vmv"}, {"t": "say wow now"}]},   # 서브트리에 둘 다
+        "d": "wow and vmv in one string",                       # 문자열 하나에 둘 다
+    }
+    print("wow+vmv 노드 전부      :",
+          [p for p, _ in find_nodes_with_all(both, "wow", "vmv")])
+    print("wow+vmv 최소 노드만    :",
+          [p for p, _ in find_nodes_with_all(both, "wow", "vmv", deepest_only=True)])
 
 
 if __name__ == "__main__":

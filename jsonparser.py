@@ -241,6 +241,77 @@ def struct_contains_text(data: Any, needle: str, expr: str = "$.data",
     return bool(matches), matches
 
 
+def find_nodes_with_all(data: Any, *needles: str, expr: str = "$",
+                        deepest_only: bool = False,
+                        ignore_case: bool = False) -> list[tuple[str, Any]]:
+    """지정한 문자열을 **모두** (부분문자열로) 포함하는 노드를 찾는다.
+
+    각 노드의 하위(자기 자신 포함)를 재귀 검색해, needles 가 전부 (dict 키
+    이름 또는 문자열 값 어디든) 나타나는 노드를 ``(path, node)`` 리스트로
+    반환한다. 서로 다른 문자열이 같은 서브트리의 **다른 위치**에 있어도 그
+    공통 조상 노드가 함께 잡힌다. 하나의 문자열 값 안에 모두 있으면 그 리프도
+    잡힌다.
+
+    Parameters
+    ----------
+    needles      : 함께 포함되어야 할 검색어(1개 이상). 모두 문자열.
+    expr         : 검색을 시작할 서브트리 경로 (기본 "$", 문서 전체).
+    deepest_only : True 면 조건을 만족하는 **가장 깊은**(자손이 만족하지 않는)
+                   노드만 반환 — "문자열들을 함께 담는 최소 노드".
+    ignore_case  : 대소문자 무시 (유니코드 casefold).
+
+    예::
+
+        # 'wow' 와 'vmv' 를 동시에 가진 최소 노드만
+        find_nodes_with_all(doc, "wow", "vmv", deepest_only=True)
+        # -> [("$.a", {"title": "wow deal", "code": "vmv-1"}), ...]
+    """
+    if not needles:
+        raise ValueError("needle 을 하나 이상 지정하세요")
+    if not all(isinstance(n, str) for n in needles):
+        raise ValueError("needle 은 모두 문자열이어야 합니다")
+
+    data = _ensure_obj(data)
+    root = get_path(data, expr, MISSING)
+    if root is MISSING:
+        return []
+
+    need = set(needles)
+    targets = [n.casefold() if ignore_case else n for n in needles]
+
+    def hit(text: str) -> set[str]:
+        t = text.casefold() if ignore_case else text
+        return {needles[i] for i, tg in enumerate(targets) if tg in t}
+
+    found: list[tuple[str, Any]] = []
+
+    def walk(node: Any, path: str) -> set[str]:
+        present: set[str] = set()
+        if isinstance(node, Mapping):
+            for k, v in node.items():
+                if isinstance(k, str):
+                    present |= hit(k)
+                present |= walk(v, f"{path}.{k}")
+        elif isinstance(node, (list, tuple)):
+            for i, v in enumerate(node):
+                present |= walk(v, f"{path}[{i}]")
+        elif isinstance(node, str):
+            present |= hit(node)
+        if need <= present:            # 이 서브트리에 needles 가 모두 존재
+            found.append((path, node))
+        return present
+
+    base = expr if expr.strip().startswith("$") else "$." + expr.lstrip(".")
+    walk(root, base)
+
+    if deepest_only:
+        paths = [p for p, _ in found]
+        found = [(p, n) for p, n in found
+                 if not any(q != p and (q.startswith(p + ".") or q.startswith(p + "["))
+                            for q in paths)]
+    return found
+
+
 # ---------------------------------------------------------------------------
 # 기능 1: 검증
 # ---------------------------------------------------------------------------
@@ -603,6 +674,7 @@ __all__ = [
     "TextMatch",
     "find_text",
     "struct_contains_text",
+    "find_nodes_with_all",
     "UnknownTypeError",
     "AmbiguousTypeError",
     "TypeProfile",

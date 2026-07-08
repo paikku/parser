@@ -12,6 +12,7 @@ from jsonparser import (
     UnknownTypeError,
     Validator,
     extract,
+    find_nodes_with_all,
     find_text,
     get_all,
     get_path,
@@ -536,6 +537,56 @@ class TestNoInputMutation(unittest.TestCase):
         doc = {"order": {"items": [{"tags": ["sale"]}, {"tags": ["x"]}]}}
         self._assert_unchanged(doc, lambda d: validate(
             d, [{"path": "$.order.items[?(@.tags[*] == 'sale')]", "op": "exists"}]))
+
+
+class TestFindNodesWithAll(unittest.TestCase):
+    """여러 문자열을 동시에 가진 노드 찾기."""
+
+    DOC = {
+        "a": {"title": "wow deal", "code": "vmv-1"},           # 둘 다(값)
+        "b": {"title": "wow only"},                             # wow 만
+        "c": {"items": [{"t": "vmv"}, {"t": "say wow now"}]},   # 서브트리에 둘 다
+        "d": "wow and vmv in one string",                       # 문자열 하나에 둘 다
+        "e": {"vmvKey": {"note": "wow"}},                       # 키+값
+    }
+
+    def test_finds_all_nodes_with_both(self):
+        paths = {p for p, _ in find_nodes_with_all(self.DOC, "wow", "vmv")}
+        # a, c.items, c, d, e, 그리고 루트 $
+        self.assertEqual(paths, {"$.a", "$.c.items", "$.c", "$.d", "$.e", "$"})
+
+    def test_deepest_only(self):
+        paths = {p for p, _ in find_nodes_with_all(
+            self.DOC, "wow", "vmv", deepest_only=True)}
+        # 최소 노드: a, c.items, d, e (c 와 $ 는 자손이 이미 만족하므로 제외)
+        self.assertEqual(paths, {"$.a", "$.c.items", "$.d", "$.e"})
+
+    def test_b_excluded(self):
+        paths = {p for p, _ in find_nodes_with_all(self.DOC, "wow", "vmv")}
+        self.assertNotIn("$.b", paths)   # wow 만 있고 vmv 없음
+
+    def test_single_needle(self):
+        paths = {p for p, _ in find_nodes_with_all(
+            {"x": {"k": "wow"}}, "wow", deepest_only=True)}
+        self.assertEqual(paths, {"$.x.k"})
+
+    def test_expr_scopes_search(self):
+        res = find_nodes_with_all(self.DOC, "wow", "vmv", expr="$.a")
+        self.assertEqual(res, [("$.a", self.DOC["a"])])
+
+    def test_ignore_case(self):
+        doc = {"n": {"a": "WOW", "b": "VMV"}}
+        self.assertFalse(find_nodes_with_all(doc, "wow", "vmv"))
+        self.assertTrue(find_nodes_with_all(doc, "wow", "vmv", ignore_case=True))
+
+    def test_no_needle_raises(self):
+        with self.assertRaises(ValueError):
+            find_nodes_with_all(self.DOC)
+
+    def test_does_not_mutate(self):
+        original = copy.deepcopy(self.DOC)
+        find_nodes_with_all(self.DOC, "wow", "vmv")
+        self.assertEqual(self.DOC, original)
 
 
 class TestFindTextExtras(unittest.TestCase):
