@@ -299,5 +299,13 @@ doc["data"]["meta"]        # {"wow_score": 9}  (그대로 — list 로 손상되
 
 ```bash
 python3 example.py            # 데모
-python3 -m unittest -v        # 테스트 (95개)
+python3 -m unittest -v        # 코어 테스트 (95개, 코어 전용)
 ```
+
+> `unittest` 는 **코어 테스트만** 수집한다. 앱 레이어(`parsers/`) 테스트
+> `test_filt_parser.py` 는 pytest 스타일이라 `unittest` 로는 0개로 조용히 건너뛴다.
+> **코어+앱 전체**를 돌리려면 pytest 를 쓴다:
+>
+> ```bash
+> python -m pytest test_jsonparser.py test_filt_parser.py -q
+> ```

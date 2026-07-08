@@ -13,7 +13,7 @@
 |------|------|
 | `filt_data_struct.py` | `FiltDataStructV1` — 한 버전. detect(`build`) + 파싱(`normalize`) 을 통째로 소유 |
 | `registry.py` | `PROFILES` 목록 + `CLASSIFIER` + `parse_file()` — **버전 등록/디스패치 지점** |
-| `__init__.py` | 공개 API 재노출 (`parse_file`, `CLASSIFIER`, `FiltDataStructV1`) |
+| `__init__.py` | 공개 API 재노출 (`parse_file`, `CLASSIFIER`, `PROFILES`, `FiltDataStructV1`) |
 | `example_batch.py` | 폴더 배치 처리 예시 (추상화 없음) |
 
 ## 동작 모델
@@ -111,6 +111,7 @@ kind, out = parse_file(data, save_to="o.json")  # 결과를 파일로도 저장
 ```bash
 python -m parsers.example_batch <input_dir> <output_dir>
 python -m parsers.example_batch samples out --only FILT_DATA_STRUCT@v1
+python -m parsers.example_batch samples out --only FILT_DATA_STRUCT@v1 FILT_DATA_STRUCT@v2  # 여러 개 지정 가능
 ```
 
 ## 테스트
