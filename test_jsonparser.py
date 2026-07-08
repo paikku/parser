@@ -11,9 +11,12 @@ from jsonparser import (
     UnknownTypeError,
     Validator,
     extract,
+    find_text,
     get_all,
     get_path,
     has_path,
+    is_struct,
+    struct_contains_text,
     validate,
 )
 
@@ -342,6 +345,119 @@ class TestJsonStringInput(unittest.TestCase):
 
     def test_bytes_input(self):
         self.assertEqual(get_path(self.RAW.encode(), "$.user.id"), "U1")
+
+
+class TestStructContainsText(unittest.TestCase):
+    DOC = {
+        "data": {
+            "title": "this is WOW",
+            "nested": {"wow_flag": True},
+            "tags": ["ok", "wowza"],
+            "n": 5,
+        }
+    }
+
+    def test_is_struct(self):
+        self.assertTrue(is_struct(self.DOC))                 # 기본 $.data
+        self.assertFalse(is_struct({"data": "x"}))
+        self.assertFalse(is_struct({"data": [1, 2]}))
+        self.assertFalse(is_struct({}))                      # 매칭 없음
+
+    def test_found_keys_and_values(self):
+        # 기본값은 대소문자 구분 -> 대문자 "WOW" 는 매칭되지 않는다.
+        found, hits = struct_contains_text(self.DOC, "wow")
+        self.assertTrue(found)
+        got = {(m.path, m.where, m.value) for m in hits}
+        self.assertEqual(got, {
+            ("$.data.nested.wow_flag", "key", "wow_flag"),
+            ("$.data.tags[1]", "value", "wowza"),
+        })
+
+    def test_ignore_case(self):
+        found, hits = struct_contains_text(self.DOC, "wow", ignore_case=True)
+        paths = {m.path for m in hits}
+        self.assertIn("$.data.title", paths)                 # 대문자 WOW 도 매칭
+        self.assertEqual(paths, {
+            "$.data.title", "$.data.nested.wow_flag", "$.data.tags[1]",
+        })
+
+    def test_values_only(self):
+        found, hits = struct_contains_text(self.DOC, "wow", keys=False)
+        self.assertTrue(all(m.where == "value" for m in hits))
+
+    def test_not_a_struct(self):
+        self.assertEqual(struct_contains_text({"data": "wow"}, "wow"), (False, []))
+        self.assertEqual(struct_contains_text({}, "wow"), (False, []))
+
+    def test_custom_expr(self):
+        doc = {"payload": {"msg": "wow!"}}
+        found, hits = struct_contains_text(doc, "wow", expr="$.payload")
+        self.assertTrue(found)
+        self.assertEqual(hits[0].path, "$.payload.msg")
+
+    def test_json_string_input(self):
+        import json
+        self.assertTrue(struct_contains_text(json.dumps(self.DOC), "wow")[0])
+
+    def test_not_found(self):
+        self.assertEqual(struct_contains_text(self.DOC, "zzz"), (False, []))
+
+    def test_find_text_standalone(self):
+        hits = find_text({"a": {"b": "wow"}}, "wow")
+        self.assertEqual([(m.path, m.value) for m in hits], [("$.a.b", "wow")])
+
+
+class TestDeepContainsOperator(unittest.TestCase):
+    """검증 DSL 에 통합된 deep_contains 연산자 (find_text 재사용)."""
+
+    DOC = {"data": {"title": "this is wow", "nested": {"wow_flag": True},
+                    "tags": ["ok", "wowza"], "n": 5}}
+
+    def test_recursive_value_and_key(self):
+        self.assertTrue(validate(self.DOC, [
+            {"path": "$.data", "op": "deep_contains", "value": "wow"}]))
+        # 키 이름(wow_flag)만 있어도 매칭 (기존 contains 로는 불가)
+        self.assertTrue(validate({"data": {"wow_flag": 1}}, [
+            {"path": "$.data", "op": "deep_contains", "value": "wow"}]))
+
+    def test_case_sensitive_default(self):
+        self.assertFalse(validate(self.DOC, [
+            {"path": "$.data", "op": "deep_contains", "value": "WOW"}]))
+
+    def test_option_dict_ignore_case(self):
+        self.assertTrue(validate(self.DOC, [
+            {"path": "$.data", "op": "deep_contains",
+             "value": {"text": "WOW", "ignore_case": True}}]))
+
+    def test_option_dict_keys_off(self):
+        # 값만 검색하면 wow_flag(키)는 안 잡힘
+        self.assertFalse(validate({"data": {"wow_flag": 1}}, [
+            {"path": "$.data", "op": "deep_contains",
+             "value": {"text": "wow_flag", "keys": False}}]))
+
+    def test_missing_path_is_false(self):
+        self.assertFalse(validate(self.DOC, [
+            {"path": "$.nope", "op": "deep_contains", "value": "wow"}]))
+
+    def test_on_plain_string_value(self):
+        # 스칼라 문자열에도 동작 (부분문자열)
+        self.assertTrue(validate({"data": "say wow now"}, [
+            {"path": "$.data", "op": "deep_contains", "value": "wow"}]))
+
+    def test_struct_and_contains_combo(self):
+        # 원래 요구사항: $.data 가 struct 이면서 'wow' 포함
+        v = (Validator()
+             .require("$.data", "type", "dict")
+             .require("$.data", "deep_contains", "wow"))
+        self.assertTrue(v.is_valid(self.DOC))
+        self.assertFalse(v.is_valid({"data": "wow"}))     # dict 아님 -> 탈락
+
+    def test_shares_core_with_struct_contains_text(self):
+        # 두 진입점이 같은 코어(find_text)를 쓰므로 결과가 일관적
+        found, _ = struct_contains_text(self.DOC, "wow")
+        via_op = validate(self.DOC, [
+            {"path": "$.data", "op": "deep_contains", "value": "wow"}])
+        self.assertEqual(found, via_op)
 
 
 if __name__ == "__main__":
