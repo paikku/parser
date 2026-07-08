@@ -5,20 +5,6 @@
 
 > LLM/도구용 전체 API 레퍼런스(모든 함수·연산자·시맨틱·함정·예시)는 [`LLM.md`](LLM.md) 참고.
 
-## 저장소 구성 (두 레이어)
-
-이 저장소는 **독립된 두 레이어**로 나뉩니다. 작업 대상 쪽만 보면 됩니다
-(전체 지도는 [`CLAUDE.md`](CLAUDE.md)).
-
-| 레이어 | 코드 | 문서 | 테스트 |
-|--------|------|------|--------|
-| **파싱 코어** (범용 JSON 유틸) | `jsonparser.py` | 이 문서 · [`LLM.md`](LLM.md) | `test_jsonparser.py` |
-| **앱 파서** (버전 인식 파일 파서) | `parsers/` | [`parsers/README.md`](parsers/README.md) | `test_filt_parser.py` |
-
-의존은 **단방향**입니다: `parsers/` → `jsonparser`. 코어(`jsonparser.py`)는 `parsers/` 를
-전혀 모르며, 이 README와 `LLM.md` 는 **코어에 한정**됩니다. 파일 버전 파서를 추가/수정하려면
-`parsers/README.md` 만 보면 됩니다.
-
 ## 주요 기능
 
 1. **검증 (validate)** — 원하는 JSON 인지 확인. path 존재 여부, 값 비교, 정규식,
@@ -299,13 +285,5 @@ doc["data"]["meta"]        # {"wow_score": 9}  (그대로 — list 로 손상되
 
 ```bash
 python3 example.py            # 데모
-python3 -m unittest -v        # 코어 테스트 (95개, 코어 전용)
+python3 -m unittest -v        # 테스트 (95개)
 ```
-
-> `unittest` 는 **코어 테스트만** 수집한다. 앱 레이어(`parsers/`) 테스트
-> `test_filt_parser.py` 는 pytest 스타일이라 `unittest` 로는 0개로 조용히 건너뛴다.
-> **코어+앱 전체**를 돌리려면 pytest 를 쓴다:
->
-> ```bash
-> python -m pytest test_jsonparser.py test_filt_parser.py -q
-> ```
