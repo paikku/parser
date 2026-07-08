@@ -3,10 +3,10 @@
 import json
 
 from jsonparser import (
-    UnknownVersionError,
+    TypeClassifier,
+    TypeProfile,
+    UnknownTypeError,
     Validator,
-    VersionedParser,
-    VersionProfile,
     extract,
     get_path,
     has_path,
@@ -89,52 +89,56 @@ def main() -> None:
     print("\nhas_path($.order.customer.vip):", has_path(sample, "$.order.customer.vip"))
 
     # ── 기능 4: 버전 인식 파싱 (버전마다 경로가 다른 경우) ───────────────
-    print("\n== 버전 인식 파싱 ==")
-    # v1 과 v2 는 user 정보를 담는 위치/키가 서로 다르다.
-    v1_json = {"user": {"id": "U1", "name": "Kim"}}
-    v2_json = {"apiVersion": "v2", "data": {"user": {"uid": "U2", "fullName": "Lee"}}}
+    print("\n== 타입 분류 ==")
+    # 타입 a 와 b 는 user 정보를 담는 위치/키가 서로 다르다.
+    a_json = {"user": {"id": "U1", "name": "Kim"}}
+    b_json = {"kind": "b", "data": {"user": {"uid": "U2", "fullName": "Lee"}}}
 
-    parser = VersionedParser(
+    clf = TypeClassifier(
         profiles=[
-            VersionProfile(
-                name="v1",
+            TypeProfile(
+                name="a",
                 detect=Validator().require("$.user.id"),          # 구조로 감지
                 fields={"user_id": "$.user.id", "name": "$.user.name"},
             ),
-            VersionProfile(
-                name="v2",
+            TypeProfile(
+                name="b",
                 detect=Validator().require("$.data.user.uid"),
                 fields={"user_id": "$.data.user.uid", "name": "$.data.user.fullName"},
             ),
         ],
-        version_field="$.apiVersion",   # 있으면 값으로 바로 버전 채택
+        type_field="$.kind",   # 있으면 값으로 바로 타입 채택
     )
 
-    for name, doc in [("v1_json", v1_json), ("v2_json", v2_json)]:
-        res = parser.parse(doc)
-        # 버전이 뭐든 res.data 는 항상 {user_id, name} 통합 스키마.
-        print(f"{name}: version={res.version} data={res.data}")
+    for name, doc in [("a_json", a_json), ("b_json", b_json)]:
+        res = clf.classify(doc)
+        # 타입이 뭐든 res.data 는 항상 {user_id, name} 통합 스키마.
+        print(f"{name}: type={res.type} data={res.data}")
+
+    # 입력을 JSON 문자열로 그대로 받아도 된다.
+    res = clf.classify('{"user": {"id": "U9", "name": "Park"}}')
+    print("from json str:", res.type, res.data)
 
     try:
-        parser.parse({"unknown": "shape"})
-    except UnknownVersionError as exc:
+        clf.classify({"unknown": "shape"})
+    except UnknownTypeError as exc:
         print("unknown  :", exc)
 
-    # ── 기능 5: 포함관계 버전, 등록 순서 무관 (가장 구체적인 것 우선) ─────
-    print("\n== 포함관계 버전 (순서 무관) ==")
+    # ── 기능 5: 포함관계 타입, 등록 순서 무관 (가장 구체적인 것 우선) ─────
+    print("\n== 포함관계 타입 (순서 무관) ==")
     # A: a 만 / B: a + a.a / C: a=='C' 이면서 E 존재.  B·C 는 A 를 포함한다.
-    incremental = VersionedParser([
-        VersionProfile("A", detect=Validator().require("$.a"),
-                       fields={"a": "$.a"}),
-        VersionProfile("B", detect=Validator().require("$.a").require("$.a.a"),
-                       fields={"a": "$.a", "aa": "$.a.a"}),
-        VersionProfile("C", detect=Validator().require("$.a", "eq", "C").require("$.E"),
-                       fields={"a": "$.a", "e": "$.E"}),
+    nested = TypeClassifier([
+        TypeProfile("A", detect=Validator().require("$.a"),
+                    fields={"a": "$.a"}),
+        TypeProfile("B", detect=Validator().require("$.a").require("$.a.a"),
+                    fields={"a": "$.a", "aa": "$.a.a"}),
+        TypeProfile("C", detect=Validator().require("$.a", "eq", "C").require("$.E"),
+                    fields={"a": "$.a", "e": "$.E"}),
     ])
     for label, doc in [("a만", {"a": 1}),
                        ("a+a.a", {"a": {"a": 2}}),
                        ("a=='C'+E", {"a": "C", "E": 99})]:
-        print(f"  {label:12s} -> {incremental.resolve(doc).name}")  # A 먼저 등록됐어도 B/C 로
+        print(f"  {label:12s} -> {nested.resolve(doc).name}")  # A 먼저 등록됐어도 B/C 로
 
 
 if __name__ == "__main__":

@@ -48,6 +48,17 @@ class JsonPathError(ValueError):
     """잘못된 JSONPath 표현식."""
 
 
+def _ensure_obj(data: Any) -> Any:
+    """입력이 JSON 문자열/바이트면 파싱해 파이썬 객체로 만든다.
+
+    이미 파싱된 객체(dict/list 등)면 그대로 반환하므로 여러 번 호출해도 안전하다.
+    이 덕분에 모든 공개 함수가 파싱된 객체와 원본 JSON 텍스트를 모두 받는다.
+    """
+    if isinstance(data, (str, bytes, bytearray)):
+        return json.loads(data)
+    return data
+
+
 def _compile(expr: str):
     """JSONPath 표현식을 컴파일(캐시)한다. '$' 접두사는 생략 가능."""
     cached = _CACHE.get(expr)
@@ -73,7 +84,7 @@ def _is_multi(expr: str) -> bool:
 
 def get_all(data: Any, expr: str) -> list[Any]:
     """expr 에 매칭되는 모든 값을 항상 리스트로 반환한다."""
-    return [m.value for m in _compile(expr).find(data)]
+    return [m.value for m in _compile(expr).find(_ensure_obj(data))]
 
 
 def get_path(data: Any, expr: str, default: Any = None) -> Any:
@@ -84,7 +95,7 @@ def get_path(data: Any, expr: str, default: Any = None) -> Any:
       표현식이면 매칭된 값들의 **리스트**를 반환한다.
     - 그 외(단일 경로)는 매칭된 단일 값을 반환한다.
     """
-    matches = _compile(expr).find(data)
+    matches = _compile(expr).find(_ensure_obj(data))
     if _is_multi(expr):
         return [m.value for m in matches]
     return matches[0].value if matches else default
@@ -92,7 +103,7 @@ def get_path(data: Any, expr: str, default: Any = None) -> Any:
 
 def has_path(data: Any, expr: str) -> bool:
     """expr 이 하나라도 매칭되면 True."""
-    return bool(_compile(expr).find(data))
+    return bool(_compile(expr).find(_ensure_obj(data)))
 
 
 # ---------------------------------------------------------------------------
@@ -154,7 +165,7 @@ class Condition:
         if self.op not in _OPERATORS:
             raise ValueError(f"알 수 없는 연산자: {self.op!r}")
         fn = _OPERATORS[self.op]
-        matches = _compile(self.path).find(data)
+        matches = _compile(self.path).find(_ensure_obj(data))
 
         if not _is_multi(self.path):
             actual = matches[0].value if matches else MISSING
@@ -187,11 +198,13 @@ class Validator:
     def is_valid(self, data: Any) -> bool:
         if not self.conditions:
             return True
+        data = _ensure_obj(data)  # 문자열이면 한 번만 파싱 (조건별 재파싱 방지)
         results = (c.check(data) for c in self.conditions)
         return all(results) if self.logic == "and" else any(results)
 
     def explain(self, data: Any) -> list[dict[str, Any]]:
         """조건별 통과 여부를 상세히 반환 (디버깅용)."""
+        data = _ensure_obj(data)
         report = []
         for c in self.conditions:
             report.append({
@@ -245,6 +258,7 @@ def extract(data: Any, mapping: Mapping[str, str | Mapping[str, Any]],
         default   : 값이 없을 때 대체 값
         transform : callable, 뽑은 값을 후처리
     """
+    data = _ensure_obj(data)  # 문자열이면 한 번만 파싱 (필드별 재파싱 방지)
     result: dict[str, Any] = {}
     for out_key, spec in mapping.items():
         if isinstance(spec, str):
@@ -262,28 +276,28 @@ def extract(data: Any, mapping: Mapping[str, str | Mapping[str, Any]],
 
 
 # ---------------------------------------------------------------------------
-# 버전 인식(version-aware) 파싱
+# 타입 분류(type classification)
 # ---------------------------------------------------------------------------
 
-class UnknownVersionError(ValueError):
-    """어느 버전 프로필에도 매칭되지 않는 JSON."""
+class UnknownTypeError(ValueError):
+    """어느 타입 프로필에도 매칭되지 않는 JSON."""
 
 
-class AmbiguousVersionError(ValueError):
-    """동일하게 구체적인 버전이 둘 이상 매칭되어 하나로 결정할 수 없음."""
+class AmbiguousTypeError(ValueError):
+    """동일하게 구체적인 타입이 둘 이상 매칭되어 하나로 결정할 수 없음."""
 
 
 @dataclass
-class VersionProfile:
-    """하나의 버전을 기술한다.
+class TypeProfile:
+    """하나의 JSON 타입을 기술한다.
 
     Parameters
     ----------
-    name    : 버전 이름 (예: "v1"). version_field 지름길과 매칭될 값.
-    detect  : 이 JSON 이 이 버전인지 판정하는 Validator (path 존재/값/키 조합).
+    name    : 타입 이름 (예: "A"). type_field 지름길과 매칭될 값.
+    detect  : 이 JSON 이 이 타입인지 판정하는 Validator (path 존재/값/키 조합).
     fields  : 논리 필드명 -> JSONPath/옵션 매핑 (extract() 매핑과 동일 형식).
-              버전마다 이 매핑을 달리 주면, 서로 다른 구조가 동일 스키마로 정규화된다.
-    require : (선택) 이 버전이 반드시 만족해야 할 조건. parse 시 검증.
+              타입마다 이 매핑을 달리 주면, 서로 다른 구조가 동일 스키마로 정규화된다.
+    require : (선택) 이 타입이 반드시 만족해야 할 조건. classify 시 검증.
     """
 
     name: str
@@ -292,60 +306,63 @@ class VersionProfile:
     require: "Validator | None" = None
 
     def matches(self, data: Any) -> bool:
-        """이 JSON 이 이 버전으로 판정되는가."""
+        """이 JSON 이 이 타입으로 판정되는가."""
         return self.detect.is_valid(data)
 
     def specificity(self) -> int:
-        """구체성 점수. detect 조건 개수 = 많이 맞을수록 더 구체적인 버전.
+        """구체성 점수. detect 조건 개수 = 많이 맞을수록 더 구체적인 타입.
 
         예: A(=$.a 만) < B(=$.a + $.a.a). B 는 A 를 포함하므로 더 구체적.
         """
         return len(self.detect.conditions)
 
     def normalize(self, data: Any) -> dict[str, Any]:
-        """버전별 경로로 값을 뽑아 통합 스키마 dict 로 반환."""
+        """타입별 경로로 값을 뽑아 통합 스키마 dict 로 반환."""
         return extract(data, self.fields)
 
 
 @dataclass
-class ParseResult:
-    """버전 인식 파싱 결과."""
+class ClassifyResult:
+    """타입 분류 결과."""
 
-    version: str
-    data: dict[str, Any]  # 버전과 무관하게 동일한 통합 스키마
+    type: str
+    data: dict[str, Any]  # 타입과 무관하게 동일한 통합 스키마
 
 
 @dataclass
-class VersionedParser:
-    """여러 VersionProfile 로 JSON 을 판별하고 통합 스키마로 정규화한다.
+class TypeClassifier:
+    """여러 TypeProfile 로 JSON 의 타입을 판별하고 통합 스키마로 정규화한다.
 
     Parameters
     ----------
-    profiles      : VersionProfile 목록. **등록 순서와 무관**하게 판별됨
-                    (가장 구체적인 버전 우선). 새 버전은 아무 위치에 추가해도 된다.
-    version_field : (선택) 명시적 버전 필드 JSONPath. 그 값이 어떤 프로필 name 과
-                    같으면 구조 판별을 건너뛰고 즉시 채택하는 지름길.
+    profiles   : TypeProfile 목록. **등록 순서와 무관**하게 판별됨
+                 (가장 구체적인 타입 우선). 새 타입은 아무 위치에 추가해도 된다.
+    type_field : (선택) 명시적 타입 필드 JSONPath. 그 값이 어떤 프로필 name 과
+                 같으면 구조 판별을 건너뛰고 즉시 채택하는 지름길.
     """
 
-    profiles: list[VersionProfile] = field(default_factory=list)
-    version_field: str | None = None
+    profiles: list[TypeProfile] = field(default_factory=list)
+    type_field: str | None = None
 
-    def register(self, profile: VersionProfile) -> "VersionedParser":
+    def register(self, profile: TypeProfile) -> "TypeClassifier":
         """프로필을 추가하고 self 를 반환 (체이닝용)."""
         self.profiles.append(profile)
         return self
 
-    def resolve(self, data: Any) -> VersionProfile:
-        """JSON 을 분석해 해당 VersionProfile 을 반환한다.
+    def resolve(self, data: Any) -> TypeProfile:
+        """JSON 을 분석해 해당 TypeProfile 을 반환한다.
 
-        1) version_field 가 있고 그 값이 어떤 프로필 name 과 일치하면 즉시 채택.
+        1) type_field 가 있고 그 값이 어떤 프로필 name 과 일치하면 즉시 채택.
         2) 아니면 detect 가 통과하는 프로필 중 **가장 구체적인(조건이 가장 많이
            맞는) 것** 을 채택. 등록 순서는 영향을 주지 않는다.
-        매칭이 없으면 UnknownVersionError, 가장 구체적인 버전이 동점이면
-        AmbiguousVersionError.
+        매칭이 없으면 UnknownTypeError, 가장 구체적인 타입이 동점이면
+        AmbiguousTypeError.
+
+        입력은 파싱된 객체 또는 JSON 문자열/바이트 모두 허용한다.
         """
-        if self.version_field is not None:
-            marker = get_path(data, self.version_field, MISSING)
+        data = _ensure_obj(data)
+        if self.type_field is not None:
+            marker = get_path(data, self.type_field, MISSING)
             if marker is not MISSING:
                 for p in self.profiles:
                     if p.name == marker:
@@ -353,27 +370,31 @@ class VersionedParser:
 
         matches = [p for p in self.profiles if p.matches(data)]
         if not matches:
-            raise UnknownVersionError(
-                f"어느 버전에도 매칭되지 않음 (후보: {[p.name for p in self.profiles]})"
+            raise UnknownTypeError(
+                f"어느 타입에도 매칭되지 않음 (후보: {[p.name for p in self.profiles]})"
             )
         best = max(p.specificity() for p in matches)
         top = [p for p in matches if p.specificity() == best]
         if len(top) > 1:
-            raise AmbiguousVersionError(
-                f"동일하게 구체적인 버전이 여럿 매칭됨 "
+            raise AmbiguousTypeError(
+                f"동일하게 구체적인 타입이 여럿 매칭됨 "
                 f"(조건 {best}개): {[p.name for p in top]}"
             )
         return top[0]
 
-    def parse(self, data: Any) -> ParseResult:
-        """판별 → (필수조건 검증) → 정규화 후 ParseResult 반환."""
+    def classify(self, data: Any) -> ClassifyResult:
+        """판별 → (필수조건 검증) → 정규화 후 ClassifyResult 반환.
+
+        입력은 파싱된 객체 또는 JSON 문자열/바이트 모두 허용한다.
+        """
+        data = _ensure_obj(data)
         profile = self.resolve(data)
         if profile.require is not None and not profile.require.is_valid(data):
             raise ValueError(
-                f"버전 {profile.name!r} 필수조건 불충족: "
+                f"타입 {profile.name!r} 필수조건 불충족: "
                 f"{profile.require.explain(data)}"
             )
-        return ParseResult(version=profile.name, data=profile.normalize(data))
+        return ClassifyResult(type=profile.name, data=profile.normalize(data))
 
 
 # ---------------------------------------------------------------------------
@@ -401,11 +422,11 @@ __all__ = [
     "Validator",
     "validate",
     "extract",
-    "UnknownVersionError",
-    "AmbiguousVersionError",
-    "VersionProfile",
-    "ParseResult",
-    "VersionedParser",
+    "UnknownTypeError",
+    "AmbiguousTypeError",
+    "TypeProfile",
+    "ClassifyResult",
+    "TypeClassifier",
     "loads",
     "load_file",
 ]

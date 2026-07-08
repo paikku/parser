@@ -79,76 +79,87 @@ extract(data, {
 여러 값을 내는 path 에는 `match="all"`(모두 만족) 또는 `match="any"`(하나라도) 지정 가능.
 필터(`[?(...)]`) 를 써서 조건을 path 안에 직접 표현할 수도 있습니다.
 
-## 버전 인식 파싱 (버전마다 경로가 다를 때)
+## 타입 분류 (타입마다 경로가 다를 때)
 
-같은 종류의 JSON 이라도 버전에 따라 구조/경로가 다른 경우, "JSON 분석 → 버전 판별 →
-버전별 경로로 정규화" 를 라이브러리가 담당한다. 호출자는 버전 분기 코드를 쓰지 않고,
-**버전이 뭐든 동일한 통합 스키마**를 돌려받는다.
+같은 계열의 JSON 이라도 구조/경로가 서로 다른 여러 타입인 경우, "JSON 분석 → 타입 판별 →
+타입별 경로로 정규화" 를 라이브러리가 담당한다. 호출자는 타입 분기 코드를 쓰지 않고,
+**타입이 뭐든 동일한 통합 스키마**를 돌려받는다.
 
 ```python
-from jsonparser import VersionedParser, VersionProfile, Validator, UnknownVersionError
+from jsonparser import TypeClassifier, TypeProfile, Validator, UnknownTypeError
 
-parser = VersionedParser(
+clf = TypeClassifier(
     profiles=[
-        VersionProfile(
-            name="v1",
+        TypeProfile(
+            name="a",
             detect=Validator().require("$.user.id"),                 # 구조로 감지
-            fields={"user_id": "$.user.id", "name": "$.user.name"},  # v1 경로
+            fields={"user_id": "$.user.id", "name": "$.user.name"},  # a 타입 경로
         ),
-        VersionProfile(
-            name="v2",
+        TypeProfile(
+            name="b",
             detect=Validator().require("$.data.user.uid"),
-            fields={"user_id": "$.data.user.uid", "name": "$.data.user.fullName"},  # v2 경로
+            fields={"user_id": "$.data.user.uid", "name": "$.data.user.fullName"},  # b 타입 경로
         ),
     ],
-    version_field="$.apiVersion",   # (선택) 값이 프로필 name 과 같으면 즉시 채택하는 지름길
+    type_field="$.kind",   # (선택) 값이 프로필 name 과 같으면 즉시 채택하는 지름길
 )
 
-parser.parse({"user": {"id": "U1", "name": "Kim"}})
-# -> ParseResult(version="v1", data={"user_id": "U1", "name": "Kim"})
+clf.classify({"user": {"id": "U1", "name": "Kim"}})
+# -> ClassifyResult(type="a", data={"user_id": "U1", "name": "Kim"})
 
-parser.parse({"apiVersion": "v2", "data": {"user": {"uid": "U2", "fullName": "Lee"}}})
-# -> ParseResult(version="v2", data={"user_id": "U2", "name": "Lee"})
+clf.classify({"kind": "b", "data": {"user": {"uid": "U2", "fullName": "Lee"}}})
+# -> ClassifyResult(type="b", data={"user_id": "U2", "name": "Lee"})
 
-parser.parse({"unknown": "shape"})   # -> UnknownVersionError
+clf.classify('{"user": {"id": "U9", "name": "Park"}}')   # JSON 문자열 입력도 허용
+clf.classify({"unknown": "shape"})                       # -> UnknownTypeError
 ```
 
 구성 요소:
 
-- **`VersionProfile`** — 버전 하나. `detect`(이 버전인지 판정하는 `Validator`),
-  `fields`(버전별 논리명→JSONPath 매핑 = `extract` 매핑), `require`(선택, 이 버전 필수조건).
-- **`VersionedParser`** — 프로필 목록과 선택적 `version_field`.
-  - `resolve(data)` : `version_field` 값이 프로필 `name` 과 맞으면 즉시 채택, 아니면
+- **`TypeProfile`** — 타입 하나. `detect`(이 타입인지 판정하는 `Validator`),
+  `fields`(타입별 논리명→JSONPath 매핑 = `extract` 매핑), `require`(선택, 이 타입 필수조건).
+- **`TypeClassifier`** — 프로필 목록과 선택적 `type_field`.
+  - `resolve(data)` : `type_field` 값이 프로필 `name` 과 맞으면 즉시 채택, 아니면
     `detect` 통과 프로필 중 **가장 구체적인(조건이 가장 많이 맞는) 것** 채택.
-    **등록 순서 무관.** 매칭 없으면 `UnknownVersionError`, 동점이면 `AmbiguousVersionError`.
-  - `parse(data)` : 판별 → `require` 검증 → 정규화 → `ParseResult(version, data)`.
+    **등록 순서 무관.** 매칭 없으면 `UnknownTypeError`, 동점이면 `AmbiguousTypeError`.
+  - `classify(data)` : 판별 → `require` 검증 → 정규화 → `ClassifyResult(type, data)`.
 
-### 버전을 점진적으로 늘려갈 때 (포함관계)
+### 타입을 점진적으로 늘려갈 때 (포함관계)
 
-버전이 서로를 포함하는 형태로 계속 추가되는 경우 — 예를 들어
-`A`(=`$.a` 존재) → `B`(=`$.a` + `$.a.a`) → `C`(=`$.a=='C'` + `$.E`) — 각 버전을
-`VersionProfile` 로 선언만 하면 된다. `B`·`C` 는 `A` 의 조건을 포함하지만,
-`resolve` 는 **가장 구체적인 버전**을 고르므로 등록 순서에 상관없이 올바르게 판별한다.
+타입이 서로를 포함하는 형태로 계속 추가되는 경우 — 예를 들어
+`A`(=`$.a` 존재) → `B`(=`$.a` + `$.a.a`) → `C`(=`$.a=='C'` + `$.E`) — 각 타입을
+`TypeProfile` 로 선언만 하면 된다. `B`·`C` 는 `A` 의 조건을 포함하지만,
+`resolve` 는 **가장 구체적인 타입**을 고르므로 등록 순서에 상관없이 올바르게 판별한다.
 
 ```python
-parser = VersionedParser([
-    VersionProfile("A", detect=Validator().require("$.a"), fields={"a": "$.a"}),
-    VersionProfile("B", detect=Validator().require("$.a").require("$.a.a"),
-                   fields={"a": "$.a", "aa": "$.a.a"}),
-    VersionProfile("C", detect=Validator().require("$.a", "eq", "C").require("$.E"),
-                   fields={"a": "$.a", "e": "$.E"}),
+clf = TypeClassifier([
+    TypeProfile("A", detect=Validator().require("$.a"), fields={"a": "$.a"}),
+    TypeProfile("B", detect=Validator().require("$.a").require("$.a.a"),
+                fields={"a": "$.a", "aa": "$.a.a"}),
+    TypeProfile("C", detect=Validator().require("$.a", "eq", "C").require("$.E"),
+                fields={"a": "$.a", "e": "$.E"}),
 ])
-parser.resolve({"a": 1}).name              # "A"
-parser.resolve({"a": {"a": 2}}).name       # "B"  (A 도 매칭되지만 더 구체적인 B)
-parser.resolve({"a": "C", "E": 9}).name    # "C"
+clf.resolve({"a": 1}).name              # "A"
+clf.resolve({"a": {"a": 2}}).name       # "B"  (A 도 매칭되지만 더 구체적인 B)
+clf.resolve({"a": "C", "E": 9}).name    # "C"
 ```
 
-새 버전은 목록 아무 위치에 추가하면 되고, 두 버전이 똑같이 구체적인데 동시에 매칭되면
-`AmbiguousVersionError` 로 알려주므로 조건 설계 실수를 조기에 잡을 수 있다.
+새 타입은 목록 아무 위치에 추가하면 되고, 두 타입이 똑같이 구체적인데 동시에 매칭되면
+`AmbiguousTypeError` 로 알려주므로 조건 설계 실수를 조기에 잡을 수 있다.
+
+## 입력 형식
+
+모든 공개 함수(`get_path`, `get_all`, `has_path`, `validate`, `extract`,
+`TypeClassifier.classify`/`resolve`)는 **파싱된 파이썬 객체**뿐 아니라
+**JSON 문자열/바이트**도 그대로 받는다. 문자열이면 내부에서 한 번 파싱한다.
+
+```python
+get_path('{"user": {"id": "U1"}}', "$.user.id")   # "U1"
+```
 
 ## 실행
 
 ```bash
 python3 example.py            # 데모
-python3 -m unittest -v        # 테스트 (49개)
+python3 -m unittest -v        # 테스트 (56개)
 ```

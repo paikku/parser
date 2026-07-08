@@ -3,13 +3,13 @@
 import unittest
 
 from jsonparser import (
-    AmbiguousVersionError,
+    AmbiguousTypeError,
     Condition,
     JsonPathError,
-    UnknownVersionError,
+    TypeClassifier,
+    TypeProfile,
+    UnknownTypeError,
     Validator,
-    VersionProfile,
-    VersionedParser,
     extract,
     get_all,
     get_path,
@@ -198,86 +198,93 @@ class TestExtract(unittest.TestCase):
 
 
 
-# 버전별로 구조가 다른 두 JSON --------------------------------------------
-V1_JSON = {"user": {"id": "U1", "name": "Kim"}}
-V2_JSON = {"apiVersion": "v2", "data": {"user": {"uid": "U2", "fullName": "Lee"}}}
+# 타입별로 구조가 다른 두 JSON --------------------------------------------
+A_JSON = {"user": {"id": "U1", "name": "Kim"}}
+B_JSON = {"kind": "b", "data": {"user": {"uid": "U2", "fullName": "Lee"}}}
 
 
-def _make_parser():
-    v1 = VersionProfile(
-        name="v1",
+def _make_classifier():
+    a = TypeProfile(
+        name="a",
         detect=Validator().require("$.user.id"),
         fields={"user_id": "$.user.id", "name": "$.user.name"},
     )
-    v2 = VersionProfile(
-        name="v2",
+    b = TypeProfile(
+        name="b",
         detect=Validator().require("$.data.user.uid"),
         fields={"user_id": "$.data.user.uid", "name": "$.data.user.fullName"},
     )
-    return VersionedParser([v1, v2], version_field="$.apiVersion")
+    return TypeClassifier([a, b], type_field="$.kind")
 
 
-class TestVersioned(unittest.TestCase):
+class TestClassify(unittest.TestCase):
     def test_resolve_by_structure(self):
-        parser = _make_parser()
-        self.assertEqual(parser.resolve(V1_JSON).name, "v1")
+        clf = _make_classifier()
+        self.assertEqual(clf.resolve(A_JSON).name, "a")
 
-    def test_resolve_by_version_field_shortcut(self):
-        # apiVersion == "v2" 이면 detect 없이도 v2 로 채택.
-        parser = _make_parser()
-        self.assertEqual(parser.resolve(V2_JSON).name, "v2")
+    def test_resolve_by_type_field_shortcut(self):
+        # kind == "b" 이면 detect 없이도 b 로 채택.
+        clf = _make_classifier()
+        self.assertEqual(clf.resolve(B_JSON).name, "b")
 
-    def test_version_field_falls_back_to_detect(self):
-        # 버전 필드 값이 어느 name 과도 안 맞으면 detect 로 판별.
-        parser = _make_parser()
-        data = {"apiVersion": "bogus", "user": {"id": "U9", "name": "X"}}
-        self.assertEqual(parser.resolve(data).name, "v1")
+    def test_type_field_falls_back_to_detect(self):
+        # 타입 필드 값이 어느 name 과도 안 맞으면 detect 로 판별.
+        clf = _make_classifier()
+        data = {"kind": "bogus", "user": {"id": "U9", "name": "X"}}
+        self.assertEqual(clf.resolve(data).name, "a")
 
     def test_normalized_output_is_unified(self):
-        parser = _make_parser()
-        r1 = parser.parse(V1_JSON)
-        r2 = parser.parse(V2_JSON)
-        # 버전이 달라도 동일한 키 스키마.
-        self.assertEqual(r1.version, "v1")
+        clf = _make_classifier()
+        r1 = clf.classify(A_JSON)
+        r2 = clf.classify(B_JSON)
+        # 타입이 달라도 동일한 키 스키마.
+        self.assertEqual(r1.type, "a")
         self.assertEqual(r1.data, {"user_id": "U1", "name": "Kim"})
-        self.assertEqual(r2.version, "v2")
+        self.assertEqual(r2.type, "b")
         self.assertEqual(r2.data, {"user_id": "U2", "name": "Lee"})
         self.assertEqual(set(r1.data), set(r2.data))
 
-    def test_unknown_version_raises(self):
-        parser = _make_parser()
-        with self.assertRaises(UnknownVersionError):
-            parser.parse({"something": "else"})
+    def test_unknown_type_raises(self):
+        clf = _make_classifier()
+        with self.assertRaises(UnknownTypeError):
+            clf.classify({"something": "else"})
 
     def test_require_failure_raises(self):
-        v = VersionProfile(
-            name="v1",
+        a = TypeProfile(
+            name="a",
             detect=Validator().require("$.user.id"),
             fields={"user_id": "$.user.id"},
             require=Validator().require("$.user.age", "gte", 18),
         )
-        parser = VersionedParser([v])
+        clf = TypeClassifier([a])
         with self.assertRaises(ValueError):
-            parser.parse({"user": {"id": "U1", "age": 10}})
+            clf.classify({"user": {"id": "U1", "age": 10}})
 
     def test_register_chaining(self):
-        parser = VersionedParser()
-        parser.register(VersionProfile(
-            name="v1",
+        clf = TypeClassifier()
+        clf.register(TypeProfile(
+            name="a",
             detect=Validator().require("$.user.id"),
             fields={"user_id": "$.user.id"},
         ))
-        self.assertEqual(parser.parse(V1_JSON).data, {"user_id": "U1"})
+        self.assertEqual(clf.classify(A_JSON).data, {"user_id": "U1"})
+
+    def test_classify_accepts_json_string(self):
+        # 입력을 파싱된 객체가 아니라 JSON 문자열로도 받는다.
+        clf = _make_classifier()
+        res = clf.classify('{"user": {"id": "U1", "name": "Kim"}}')
+        self.assertEqual(res.type, "a")
+        self.assertEqual(res.data, {"user_id": "U1", "name": "Kim"})
 
 
-# 포함관계가 있는 버전들 (A ⊂ B, A ⊂ C) — 등록 순서 무관성 검증 --------------
+# 포함관계가 있는 타입들 (A ⊂ B, A ⊂ C) — 등록 순서 무관성 검증 --------------
 def _nested_profiles():
-    A = VersionProfile("A", detect=Validator().require("$.a"),
-                       fields={"a": "$.a"})
-    B = VersionProfile("B", detect=Validator().require("$.a").require("$.a.a"),
-                       fields={"a": "$.a", "aa": "$.a.a"})
-    C = VersionProfile("C", detect=Validator().require("$.a", "eq", "C").require("$.E"),
-                       fields={"a": "$.a", "e": "$.E"})
+    A = TypeProfile("A", detect=Validator().require("$.a"),
+                    fields={"a": "$.a"})
+    B = TypeProfile("B", detect=Validator().require("$.a").require("$.a.a"),
+                    fields={"a": "$.a", "aa": "$.a.a"})
+    C = TypeProfile("C", detect=Validator().require("$.a", "eq", "C").require("$.E"),
+                    fields={"a": "$.a", "e": "$.E"})
     return A, B, C
 
 
@@ -286,31 +293,55 @@ class TestSpecificity(unittest.TestCase):
     DOC_B = {"a": {"a": 2}}
     DOC_C = {"a": "C", "E": 99}
 
-    def _check(self, parser):
-        self.assertEqual(parser.resolve(self.DOC_A).name, "A")
-        self.assertEqual(parser.resolve(self.DOC_B).name, "B")
-        self.assertEqual(parser.resolve(self.DOC_C).name, "C")
+    def _check(self, clf):
+        self.assertEqual(clf.resolve(self.DOC_A).name, "A")
+        self.assertEqual(clf.resolve(self.DOC_B).name, "B")
+        self.assertEqual(clf.resolve(self.DOC_C).name, "C")
 
     def test_order_independent_forward(self):
         A, B, C = _nested_profiles()
-        self._check(VersionedParser([A, B, C]))
+        self._check(TypeClassifier([A, B, C]))
 
     def test_order_independent_reverse(self):
         A, B, C = _nested_profiles()
-        self._check(VersionedParser([C, B, A]))
+        self._check(TypeClassifier([C, B, A]))
 
     def test_most_specific_wins_not_first(self):
         # A 를 먼저 등록해도 B 짜리 JSON 은 B 로 (조건이 더 많이 맞음).
         A, B, C = _nested_profiles()
-        self.assertEqual(VersionedParser([A, B]).resolve(self.DOC_B).name, "B")
+        self.assertEqual(TypeClassifier([A, B]).resolve(self.DOC_B).name, "B")
 
     def test_ambiguous_raises(self):
-        # 동일하게 구체적인(조건 1개씩) 두 버전이 같은 JSON 에 매칭.
-        X = VersionProfile("X", detect=Validator().require("$.a"), fields={"a": "$.a"})
-        Y = VersionProfile("Y", detect=Validator().require("$.b"), fields={"b": "$.b"})
-        parser = VersionedParser([X, Y])
-        with self.assertRaises(AmbiguousVersionError):
-            parser.resolve({"a": 1, "b": 2})
+        # 동일하게 구체적인(조건 1개씩) 두 타입이 같은 JSON 에 매칭.
+        X = TypeProfile("X", detect=Validator().require("$.a"), fields={"a": "$.a"})
+        Y = TypeProfile("Y", detect=Validator().require("$.b"), fields={"b": "$.b"})
+        clf = TypeClassifier([X, Y])
+        with self.assertRaises(AmbiguousTypeError):
+            clf.resolve({"a": 1, "b": 2})
+
+
+class TestJsonStringInput(unittest.TestCase):
+    """모든 공개 함수가 JSON 문자열 입력을 받는지 검증."""
+
+    RAW = '{"user": {"id": "U1", "age": 20}, "items": [{"sku": "A"}]}'
+
+    def test_get_path_from_string(self):
+        self.assertEqual(get_path(self.RAW, "$.user.id"), "U1")
+
+    def test_get_all_from_string(self):
+        self.assertEqual(get_all(self.RAW, "$.items[*].sku"), ["A"])
+
+    def test_has_path_from_string(self):
+        self.assertTrue(has_path(self.RAW, "$.user.age"))
+
+    def test_validate_from_string(self):
+        self.assertTrue(validate(self.RAW, [{"path": "$.user.age", "op": "gte", "value": 18}]))
+
+    def test_extract_from_string(self):
+        self.assertEqual(extract(self.RAW, {"id": "$.user.id"}), {"id": "U1"})
+
+    def test_bytes_input(self):
+        self.assertEqual(get_path(self.RAW.encode(), "$.user.id"), "U1")
 
 
 if __name__ == "__main__":
