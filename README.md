@@ -3,6 +3,8 @@
 표준 **JSONPath** 기반 파이썬 JSON 파싱/검증/추출 유틸리티.
 경로 처리는 [`jsonpath-ng`](https://github.com/h2non/jsonpath-ng) 확장 파서를 사용합니다.
 
+> LLM/도구용 전체 API 레퍼런스(모든 함수·연산자·시맨틱·함정·예시)는 [`LLM.md`](LLM.md) 참고.
+
 ## 주요 기능
 
 1. **검증 (validate)** — 원하는 JSON 인지 확인. path 존재 여부, 값 비교, 정규식,
