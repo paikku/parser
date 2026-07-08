@@ -2,7 +2,16 @@
 
 import json
 
-from jsonparser import Validator, extract, get_path, has_path, validate
+from jsonparser import (
+    UnknownVersionError,
+    Validator,
+    VersionedParser,
+    VersionProfile,
+    extract,
+    get_path,
+    has_path,
+    validate,
+)
 
 sample = {
     "order": {
@@ -78,6 +87,38 @@ def main() -> None:
     print(json.dumps(projected, ensure_ascii=False, indent=2))
 
     print("\nhas_path($.order.customer.vip):", has_path(sample, "$.order.customer.vip"))
+
+    # ── 기능 4: 버전 인식 파싱 (버전마다 경로가 다른 경우) ───────────────
+    print("\n== 버전 인식 파싱 ==")
+    # v1 과 v2 는 user 정보를 담는 위치/키가 서로 다르다.
+    v1_json = {"user": {"id": "U1", "name": "Kim"}}
+    v2_json = {"apiVersion": "v2", "data": {"user": {"uid": "U2", "fullName": "Lee"}}}
+
+    parser = VersionedParser(
+        profiles=[
+            VersionProfile(
+                name="v1",
+                detect=Validator().require("$.user.id"),          # 구조로 감지
+                fields={"user_id": "$.user.id", "name": "$.user.name"},
+            ),
+            VersionProfile(
+                name="v2",
+                detect=Validator().require("$.data.user.uid"),
+                fields={"user_id": "$.data.user.uid", "name": "$.data.user.fullName"},
+            ),
+        ],
+        version_field="$.apiVersion",   # 있으면 값으로 바로 버전 채택
+    )
+
+    for name, doc in [("v1_json", v1_json), ("v2_json", v2_json)]:
+        res = parser.parse(doc)
+        # 버전이 뭐든 res.data 는 항상 {user_id, name} 통합 스키마.
+        print(f"{name}: version={res.version} data={res.data}")
+
+    try:
+        parser.parse({"unknown": "shape"})
+    except UnknownVersionError as exc:
+        print("unknown  :", exc)
 
 
 if __name__ == "__main__":

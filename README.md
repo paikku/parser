@@ -79,9 +79,52 @@ extract(data, {
 여러 값을 내는 path 에는 `match="all"`(모두 만족) 또는 `match="any"`(하나라도) 지정 가능.
 필터(`[?(...)]`) 를 써서 조건을 path 안에 직접 표현할 수도 있습니다.
 
+## 버전 인식 파싱 (버전마다 경로가 다를 때)
+
+같은 종류의 JSON 이라도 버전에 따라 구조/경로가 다른 경우, "JSON 분석 → 버전 판별 →
+버전별 경로로 정규화" 를 라이브러리가 담당한다. 호출자는 버전 분기 코드를 쓰지 않고,
+**버전이 뭐든 동일한 통합 스키마**를 돌려받는다.
+
+```python
+from jsonparser import VersionedParser, VersionProfile, Validator, UnknownVersionError
+
+parser = VersionedParser(
+    profiles=[
+        VersionProfile(
+            name="v1",
+            detect=Validator().require("$.user.id"),                 # 구조로 감지
+            fields={"user_id": "$.user.id", "name": "$.user.name"},  # v1 경로
+        ),
+        VersionProfile(
+            name="v2",
+            detect=Validator().require("$.data.user.uid"),
+            fields={"user_id": "$.data.user.uid", "name": "$.data.user.fullName"},  # v2 경로
+        ),
+    ],
+    version_field="$.apiVersion",   # (선택) 값이 프로필 name 과 같으면 즉시 채택하는 지름길
+)
+
+parser.parse({"user": {"id": "U1", "name": "Kim"}})
+# -> ParseResult(version="v1", data={"user_id": "U1", "name": "Kim"})
+
+parser.parse({"apiVersion": "v2", "data": {"user": {"uid": "U2", "fullName": "Lee"}}})
+# -> ParseResult(version="v2", data={"user_id": "U2", "name": "Lee"})
+
+parser.parse({"unknown": "shape"})   # -> UnknownVersionError
+```
+
+구성 요소:
+
+- **`VersionProfile`** — 버전 하나. `detect`(이 버전인지 판정하는 `Validator`),
+  `fields`(버전별 논리명→JSONPath 매핑 = `extract` 매핑), `require`(선택, 이 버전 필수조건).
+- **`VersionedParser`** — 프로필 목록(등록 순서 = 우선순위)과 선택적 `version_field`.
+  - `resolve(data)` : `version_field` 값이 프로필 `name` 과 맞으면 즉시 채택, 아니면
+    등록 순서대로 `detect` 첫 통과 프로필 채택. 실패 시 `UnknownVersionError`.
+  - `parse(data)` : 판별 → `require` 검증 → 정규화 → `ParseResult(version, data)`.
+
 ## 실행
 
 ```bash
 python3 example.py            # 데모
-python3 -m unittest -v        # 테스트 (38개)
+python3 -m unittest -v        # 테스트 (45개)
 ```

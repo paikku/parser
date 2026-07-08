@@ -5,7 +5,10 @@ import unittest
 from jsonparser import (
     Condition,
     JsonPathError,
+    UnknownVersionError,
     Validator,
+    VersionProfile,
+    VersionedParser,
     extract,
     get_all,
     get_path,
@@ -191,6 +194,79 @@ class TestExtract(unittest.TestCase):
     def test_global_default(self):
         out = extract(DATA, {"x": "$.no.path"}, default="NA")
         self.assertEqual(out, {"x": "NA"})
+
+
+
+# 버전별로 구조가 다른 두 JSON --------------------------------------------
+V1_JSON = {"user": {"id": "U1", "name": "Kim"}}
+V2_JSON = {"apiVersion": "v2", "data": {"user": {"uid": "U2", "fullName": "Lee"}}}
+
+
+def _make_parser():
+    v1 = VersionProfile(
+        name="v1",
+        detect=Validator().require("$.user.id"),
+        fields={"user_id": "$.user.id", "name": "$.user.name"},
+    )
+    v2 = VersionProfile(
+        name="v2",
+        detect=Validator().require("$.data.user.uid"),
+        fields={"user_id": "$.data.user.uid", "name": "$.data.user.fullName"},
+    )
+    return VersionedParser([v1, v2], version_field="$.apiVersion")
+
+
+class TestVersioned(unittest.TestCase):
+    def test_resolve_by_structure(self):
+        parser = _make_parser()
+        self.assertEqual(parser.resolve(V1_JSON).name, "v1")
+
+    def test_resolve_by_version_field_shortcut(self):
+        # apiVersion == "v2" 이면 detect 없이도 v2 로 채택.
+        parser = _make_parser()
+        self.assertEqual(parser.resolve(V2_JSON).name, "v2")
+
+    def test_version_field_falls_back_to_detect(self):
+        # 버전 필드 값이 어느 name 과도 안 맞으면 detect 로 판별.
+        parser = _make_parser()
+        data = {"apiVersion": "bogus", "user": {"id": "U9", "name": "X"}}
+        self.assertEqual(parser.resolve(data).name, "v1")
+
+    def test_normalized_output_is_unified(self):
+        parser = _make_parser()
+        r1 = parser.parse(V1_JSON)
+        r2 = parser.parse(V2_JSON)
+        # 버전이 달라도 동일한 키 스키마.
+        self.assertEqual(r1.version, "v1")
+        self.assertEqual(r1.data, {"user_id": "U1", "name": "Kim"})
+        self.assertEqual(r2.version, "v2")
+        self.assertEqual(r2.data, {"user_id": "U2", "name": "Lee"})
+        self.assertEqual(set(r1.data), set(r2.data))
+
+    def test_unknown_version_raises(self):
+        parser = _make_parser()
+        with self.assertRaises(UnknownVersionError):
+            parser.parse({"something": "else"})
+
+    def test_require_failure_raises(self):
+        v = VersionProfile(
+            name="v1",
+            detect=Validator().require("$.user.id"),
+            fields={"user_id": "$.user.id"},
+            require=Validator().require("$.user.age", "gte", 18),
+        )
+        parser = VersionedParser([v])
+        with self.assertRaises(ValueError):
+            parser.parse({"user": {"id": "U1", "age": 10}})
+
+    def test_register_chaining(self):
+        parser = VersionedParser()
+        parser.register(VersionProfile(
+            name="v1",
+            detect=Validator().require("$.user.id"),
+            fields={"user_id": "$.user.id"},
+        ))
+        self.assertEqual(parser.parse(V1_JSON).data, {"user_id": "U1"})
 
 
 if __name__ == "__main__":

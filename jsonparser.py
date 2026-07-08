@@ -262,6 +262,99 @@ def extract(data: Any, mapping: Mapping[str, str | Mapping[str, Any]],
 
 
 # ---------------------------------------------------------------------------
+# 버전 인식(version-aware) 파싱
+# ---------------------------------------------------------------------------
+
+class UnknownVersionError(ValueError):
+    """어느 버전 프로필에도 매칭되지 않는 JSON."""
+
+
+@dataclass
+class VersionProfile:
+    """하나의 버전을 기술한다.
+
+    Parameters
+    ----------
+    name    : 버전 이름 (예: "v1"). version_field 지름길과 매칭될 값.
+    detect  : 이 JSON 이 이 버전인지 판정하는 Validator (path 존재/값/키 조합).
+    fields  : 논리 필드명 -> JSONPath/옵션 매핑 (extract() 매핑과 동일 형식).
+              버전마다 이 매핑을 달리 주면, 서로 다른 구조가 동일 스키마로 정규화된다.
+    require : (선택) 이 버전이 반드시 만족해야 할 조건. parse 시 검증.
+    """
+
+    name: str
+    detect: "Validator"
+    fields: Mapping[str, str | Mapping[str, Any]]
+    require: "Validator | None" = None
+
+    def matches(self, data: Any) -> bool:
+        """이 JSON 이 이 버전으로 판정되는가."""
+        return self.detect.is_valid(data)
+
+    def normalize(self, data: Any) -> dict[str, Any]:
+        """버전별 경로로 값을 뽑아 통합 스키마 dict 로 반환."""
+        return extract(data, self.fields)
+
+
+@dataclass
+class ParseResult:
+    """버전 인식 파싱 결과."""
+
+    version: str
+    data: dict[str, Any]  # 버전과 무관하게 동일한 통합 스키마
+
+
+@dataclass
+class VersionedParser:
+    """여러 VersionProfile 로 JSON 을 판별하고 통합 스키마로 정규화한다.
+
+    Parameters
+    ----------
+    profiles      : VersionProfile 목록. 등록 순서가 곧 판별 우선순위.
+    version_field : (선택) 명시적 버전 필드 JSONPath. 그 값이 어떤 프로필 name 과
+                    같으면 detect 를 건너뛰고 즉시 채택하는 지름길.
+    """
+
+    profiles: list[VersionProfile] = field(default_factory=list)
+    version_field: str | None = None
+
+    def register(self, profile: VersionProfile) -> "VersionedParser":
+        """프로필을 추가하고 self 를 반환 (체이닝용)."""
+        self.profiles.append(profile)
+        return self
+
+    def resolve(self, data: Any) -> VersionProfile:
+        """JSON 을 분석해 해당 VersionProfile 을 반환한다.
+
+        1) version_field 가 있고 그 값이 어떤 프로필 name 과 일치하면 즉시 채택.
+        2) 아니면 등록 순서대로 detect 가 통과하는 첫 프로필 채택.
+        둘 다 실패하면 UnknownVersionError.
+        """
+        if self.version_field is not None:
+            marker = get_path(data, self.version_field, MISSING)
+            if marker is not MISSING:
+                for p in self.profiles:
+                    if p.name == marker:
+                        return p
+        for p in self.profiles:
+            if p.matches(data):
+                return p
+        raise UnknownVersionError(
+            f"어느 버전에도 매칭되지 않음 (후보: {[p.name for p in self.profiles]})"
+        )
+
+    def parse(self, data: Any) -> ParseResult:
+        """판별 → (필수조건 검증) → 정규화 후 ParseResult 반환."""
+        profile = self.resolve(data)
+        if profile.require is not None and not profile.require.is_valid(data):
+            raise ValueError(
+                f"버전 {profile.name!r} 필수조건 불충족: "
+                f"{profile.require.explain(data)}"
+            )
+        return ParseResult(version=profile.name, data=profile.normalize(data))
+
+
+# ---------------------------------------------------------------------------
 # 진입 헬퍼
 # ---------------------------------------------------------------------------
 
@@ -286,6 +379,10 @@ __all__ = [
     "Validator",
     "validate",
     "extract",
+    "UnknownVersionError",
+    "VersionProfile",
+    "ParseResult",
+    "VersionedParser",
     "loads",
     "load_file",
 ]
