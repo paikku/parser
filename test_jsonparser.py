@@ -1,5 +1,6 @@
 """jsonparser 단위 테스트 (표준 JSONPath). 표준 unittest 만 사용."""
 
+import copy
 import unittest
 
 from jsonparser import (
@@ -493,6 +494,48 @@ class TestDeepContainsOperator(unittest.TestCase):
         with self.assertRaises(ValueError):
             validate(self.DOC, [{"path": "$.nope", "op": "deep_contains",
                                  "value": {"ignore_case": True}}])
+
+
+class TestNoInputMutation(unittest.TestCase):
+    """필터([?...]) expr 이 입력을 in-place 변형하지 않아야 한다 (업스트림 버그 패치).
+
+    jsonpath-ng ext Filter.find 가 dict 필터에서 원본을 list 로 바꾸던 버그를
+    jsonparser 임포트 시 근본 패치한다. 아래는 그 회귀 방지.
+    """
+
+    def _assert_unchanged(self, doc, call):
+        original = copy.deepcopy(doc)
+        # 패치된 함수를 원본에 직접 실행한 결과와, 복사본에 실행한 결과가 같고
+        # 원본이 전혀 바뀌지 않아야 한다.
+        r_direct = call(doc)
+        self.assertEqual(doc, original, "입력이 변형됨")
+        r_copy = call(copy.deepcopy(original))
+        self.assertEqual(r_direct, r_copy, "복사본과 결과가 다름")
+
+    def test_recursive_dict_filter_get_all(self):
+        doc = {"data": {"meta": {"wow_score": 9}, "title": "this is wow"}}
+        self._assert_unchanged(
+            doc, lambda d: get_all(d, "$.data..*[?(@ =~ '.*wow.*')]"))
+        # 특히 dict 가 list 로 바뀌지 않았는지 명시 확인
+        self.assertEqual(doc["data"]["meta"], {"wow_score": 9})
+
+    def test_direct_dict_filter_get_path(self):
+        doc = {"data": {"title": "this is wow", "x": 1}}
+        self._assert_unchanged(
+            doc, lambda d: get_path(d, "$.data[?(@ =~ '.*wow.*')]"))
+
+    def test_list_filter_still_works(self):
+        doc = {"items": [{"sku": "A", "qty": 1}, {"sku": "B", "qty": 2}]}
+        self._assert_unchanged(
+            doc, lambda d: get_path(d, "$.items[?(@.qty>1)].sku"))
+        # get_path 는 필터 expr 을 multi 로 보아 리스트를 반환한다.
+        self.assertEqual(get_path(copy.deepcopy(doc), "$.items[?(@.qty>1)].sku"),
+                         ["B"])
+
+    def test_validate_filter_condition_no_mutation(self):
+        doc = {"order": {"items": [{"tags": ["sale"]}, {"tags": ["x"]}]}}
+        self._assert_unchanged(doc, lambda d: validate(
+            d, [{"path": "$.order.items[?(@.tags[*] == 'sale')]", "op": "exists"}]))
 
 
 class TestFindTextExtras(unittest.TestCase):

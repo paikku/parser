@@ -33,6 +33,42 @@ from typing import Any, Callable, Iterable, Mapping
 from jsonpath_ng.ext import parse as _parse
 from jsonpath_ng.exceptions import JsonPathParserError
 
+
+# ---------------------------------------------------------------------------
+# 업스트림 버그 근본 패치: ext Filter 가 입력을 in-place 변형하는 문제
+# ---------------------------------------------------------------------------
+# jsonpath_ng.ext.filter.Filter.find 는 dict 에 필터([?...])를 적용할 때
+#     datum.value = list(datum.value.values())
+# 로 datum.value 를 재할당한다. 재귀 하강(..)으로 얻은 datum 은 원본 컨테이너를
+# 참조하므로, 이 재할당이 입력 dict 를 list 로 **in-place 변형(데이터 손상)** 시킨다.
+# 예: get_path(doc, "$.data..*[?(@ =~ '.*wow.*')]") 한 번에
+#     {"meta": {"wow_score": 9}}  ->  {"meta": [9]}
+# 로컬 변수만 사용하도록 find 를 교체해 원본을 절대 건드리지 않게 한다.
+# 반환 값과 필터 의미는 원본과 동일하다. (jsonpath-ng<=1.8.0 에서 확인)
+from jsonpath_ng import DatumInContext as _DatumInContext, Index as _Index
+from jsonpath_ng.ext.filter import Filter as _Filter
+
+
+def _filter_find_no_mutate(self, datum):
+    """비변형 버전 Filter.find (원본 로직과 동일하되 datum.value 를 재할당하지 않음)."""
+    if not self.expressions:
+        return datum
+    datum = _DatumInContext.wrap(datum)
+    value = datum.value
+    if isinstance(value, dict):
+        value = list(value.values())  # 로컬 변수 — 원본 datum.value 는 그대로 둔다
+    if not isinstance(value, list):
+        return []
+    return [
+        _DatumInContext(value[i], path=_Index(i), context=datum)
+        for i in range(len(value))
+        if len(self.expressions)
+        == len(list(filter(lambda x: x.find(value[i]), self.expressions)))
+    ]
+
+
+_Filter.find = _filter_find_no_mutate
+
 # 조회 실패를 명확히 구분하기 위한 센티널 (None 은 정상 값일 수 있으므로).
 MISSING = object()
 
