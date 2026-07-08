@@ -8,8 +8,10 @@ from jsonparser import (
     UnknownTypeError,
     Validator,
     extract,
+    find_text,
     get_path,
     has_path,
+    is_struct,
     struct_contains_text,
     validate,
 )
@@ -153,6 +155,67 @@ def main() -> None:
                        ("a+a.a", {"a": {"a": 2}}),
                        ("a=='C'+E", {"a": "C", "E": 99})]:
         print(f"  {label:12s} -> {nested.resolve(doc).name}")  # A 먼저 등록됐어도 B/C 로
+
+    # ── 기능 6: struct 안 문자열(부분문자열) 검색 ─────────────────────────
+    # "$.data 가 struct 이면 그 안에 'wow' 가 있는지 확인하고 위치까지 가져오기"
+    print("\n== 문자열 검색 (struct 안 'wow') ==")
+    wow_doc = {
+        "type": "event",
+        "data": {
+            "title": "WOW such deal",              # 값(대문자 WOW)
+            "meta": {"wow_score": 9, "note": "meh"},  # 키(wow_score)
+            "tags": ["new", "wowza", "hot"],        # 배열 값(wowza)
+            "count": 3,
+            "flag": True,
+        },
+    }
+
+    # (1) $.data 가 struct(dict) 인가?
+    print("is_struct($.data)     :", is_struct(wow_doc))              # True
+    print("is_struct(문자열 data) :", is_struct({"data": "wow"}))      # False
+
+    # (2) struct 면 'wow' 포함 확인 + 위치 가져오기 (기본: 대소문자 구분)
+    found, hits = struct_contains_text(wow_doc, "wow")
+    print("contains 'wow'        :", found)
+    for m in hits:
+        print(f"   {m.path:28s} [{m.where:5s}] -> {m.value!r}")
+
+    # (3) 대소문자 무시하면 값 'WOW such deal' 까지 매칭
+    _, ci = struct_contains_text(wow_doc, "wow", ignore_case=True)
+    print("ignore_case 매칭 수    :", len(ci), "->", [m.value for m in ci])
+
+    # (4) 키만 / 값만 좁혀서 검색
+    _, keys_only = struct_contains_text(wow_doc, "wow", values=False)  # 키 이름만
+    _, vals_only = struct_contains_text(wow_doc, "wow", keys=False)    # 값만
+    print("키 이름만 매칭         :", [m.value for m in keys_only])
+    print("값만 매칭             :", [m.value for m in vals_only])
+
+    # (5) struct 가 아니면 무조건 (False, [])
+    print("data 가 문자열        :", struct_contains_text({"data": "just wow"}, "wow"))
+    print("data 없음            :", struct_contains_text({"x": 1}, "wow"))
+
+    # (6) 검증 DSL 한 줄로: struct 이면서 'wow' 포함 (deep_contains 연산자)
+    v = (Validator()
+         .require("$.data", "type", "dict")
+         .require("$.data", "deep_contains", "wow"))
+    print("검증(struct+wow)      :", v.is_valid(wow_doc))
+
+    # (7) deep_contains 옵션 dict (대소문자 무시 / 값만 검색)
+    print("deep_contains WOW(ci) :", validate(wow_doc, [
+        {"path": "$.data", "op": "deep_contains",
+         "value": {"text": "WOW", "ignore_case": True}}]))
+
+    # (8) find_text 단독: 임의 중첩 구조 재귀 검색 (배열 인덱스 경로 포함)
+    blob = {"a": {"b": ["xwowx", {"c": "no"}]}, "wowKey": 1}
+    print("find_text 중첩 검색    :",
+          [(m.path, m.where) for m in find_text(blob, "wow")])
+
+    # (9) JSON 문자열/바이트 입력도 그대로 허용
+    print("from json str         :", struct_contains_text(json.dumps(wow_doc), "wow")[0])
+
+    # (10) 다른 경로에도 적용 (expr 지정) — 위 order 샘플에서 'electronics' 찾기
+    found, hits = struct_contains_text(sample, "electron", expr="$.order")
+    print("order 안 'electron'    :", found, [m.path for m in hits])
 
 
 if __name__ == "__main__":
