@@ -2,17 +2,17 @@
 
 핵심 목적 두 가지:
 1) v1 이 올바로 판별/파싱/저장되는가.
-2) **구조가 통째로 다른 새 버전**을 v1/helpers 를 한 줄도 고치지 않고 추가할 수 있는가
+2) **구조가 통째로 다른 새 버전**을 v1 을 한 줄도 고치지 않고 추가할 수 있는가
    (= 확장성이 실제로 성립하는가).
 """
 
 import pytest
 
 from jsonparser import (
-    TypeProfile, TypeClassifier, Validator, UnknownTypeError, load_file, get_path,
+    TypeProfile, TypeClassifier, Validator, UnknownTypeError, load_file,
+    find_text, get_path, get_all,
 )
 from parsers import parse_file, CLASSIFIER
-from parsers.helpers import marked_nodes, array_to_columns
 
 
 # ---- 샘플 데이터 (v1) -----------------------------------------------------
@@ -62,11 +62,10 @@ def test_save_roundtrip(tmp_path):
 
 
 # ==========================================================================
-# 확장성 증명: 구조가 통째로 다른 새 버전(S5)을 v1/helpers 수정 없이 추가.
-#   - detector 가 '배열'이 아니라 dict-of-objects {id: {name, wow}} 구조.
-#   - v1 은 array_to_kv 로 처리했지만, 이 버전은 그 헬퍼가 안 맞으므로 안 쓰고
-#     detector 를 직접 순회한다(자유 normalize). zzef 는 그대로라 헬퍼 재사용.
-#   - 이 클래스는 테스트 안에만 존재 → 프로덕션 코드(파일)를 전혀 건드리지 않음을 증명.
+# 확장성 증명: 구조가 통째로 다른 새 버전(detector 가 배열이 아니라
+# dict-of-objects {id: {name, wow}})을 v1 수정 없이 추가.
+#   - 새 버전은 자기 normalize() 안에서 dict detector 를 직접 순회(자유 파싱).
+#   - 이 클래스는 테스트 안에만 존재 → 프로덕션 코드를 전혀 건드리지 않음을 증명.
 # ==========================================================================
 class _FiltV2Nested(TypeProfile):
     @classmethod
@@ -82,16 +81,19 @@ class _FiltV2Nested(TypeProfile):
     def normalize(self, data):
         zz = Validator().require("$.x").require("$.y").require("$.z")
         result, xyz = {}, {"x": [], "y": [], "z": []}
-        for _p, node in marked_nodes(data, "FILT_DATA_STRUCT", base="$.data"):
+        for m in find_text(get_path(data, "$.data"), "FILT_DATA_STRUCT",
+                           keys=True, values=False, base="$.data"):
+            node = get_path(data, m.path)
             detector = get_path(node, "$.detector")     # bespoke: dict-of-objects
             if isinstance(detector, dict):
                 for obj in detector.values():
                     if isinstance(obj, dict) and "name" in obj and "wow" in obj:
                         result[obj["name"]] = obj["wow"]
-            cols = array_to_columns(                     # reuse: zzef 는 그대로
-                node, "$.zzef[*]", {"x": "$.x", "y": "$.y", "z": "$.z"}, guard=zz)
-            for k in xyz:
-                xyz[k].extend(cols[k])
+            for s in get_all(node, "$.zzef[*]"):        # zzef 는 그대로
+                if isinstance(s, dict) and zz.is_valid(s):
+                    xyz["x"].append(s["x"])
+                    xyz["y"].append(s["y"])
+                    xyz["z"].append(s["z"])
         return {"result": result, "xyz": xyz}
 
 
@@ -121,7 +123,7 @@ def _extended_classifier():
 def test_new_structure_version_added_without_editing_v1():
     clf = _extended_classifier()
 
-    # 새 구조 문서 → 새 버전으로 판별/파싱 (dict detector 를 bespoke 로 처리)
+    # 새 구조 문서 → 새 버전으로 판별/파싱
     res = clf.classify(_v2_nested_doc())
     assert res.type == "FILT_DATA_STRUCT@v2-nested"
     assert res.data["result"] == {"alpha": 100, "beta": "hi"}
