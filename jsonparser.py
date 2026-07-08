@@ -136,13 +136,17 @@ def find_text(obj: Any, needle: str, *, keys: bool = True, values: bool = True,
     Parameters
     ----------
     keys / values : 각각 키 이름 / 문자열 값을 검사 대상에 포함할지 여부.
-    ignore_case   : True 면 대소문자 무시.
+    ignore_case   : True 면 대소문자 무시 (유니코드 casefold 기준).
     base          : 매칭 경로의 접두사 (기본 "$").
+
+    참고: 문자열 키/값만 검사한다. int/float/bool 같은 스칼라는 텍스트로
+    변환하지 않으므로 매칭 대상이 아니다 (예: 42000 은 "42" 로 안 잡힘).
     """
-    target = needle.lower() if ignore_case else needle
+    # 대소문자 무시는 lower() 가 아니라 casefold() 로 (ß, İ 등 유니코드 대응).
+    target = needle.casefold() if ignore_case else needle
 
     def hit(text: str) -> bool:
-        return target in (text.lower() if ignore_case else text)
+        return target in (text.casefold() if ignore_case else text)
 
     out: list[TextMatch] = []
 
@@ -181,8 +185,10 @@ def struct_contains_text(data: Any, needle: str, expr: str = "$.data",
         matches : 매칭된 TextMatch 리스트 (struct 아니면 빈 리스트).
 
     ``keys`` / ``values`` / ``ignore_case`` 등 추가 옵션은 find_text 로 전달된다.
-    struct 인지 신경쓰지 않고 bool 만 필요하면 검증 DSL 의 ``deep_contains``
-    연산자를 써도 된다 (동일 코어 find_text 재사용).
+    코어(find_text)는 검증 DSL 의 ``deep_contains`` 연산자와 공유하지만, 이
+    함수는 대상이 **dict 일 때만** 검색한다(그 외에는 (False, [])). 반면
+    ``deep_contains`` 는 dict 가드가 없어 배열/문자열도 검색하므로, 대상이
+    dict 가 아니면 두 결과가 달라질 수 있다.
 
     예::
 
@@ -203,6 +209,9 @@ def struct_contains_text(data: Any, needle: str, expr: str = "$.data",
 # 기능 1: 검증
 # ---------------------------------------------------------------------------
 
+_DEEP_CONTAINS_OPTS = ("keys", "values", "ignore_case")
+
+
 def _deep_contains(actual: Any, expected: Any) -> bool:
     """actual(struct/배열/문자열) 하위 어디든 텍스트가 부분문자열로 있으면 True.
 
@@ -212,15 +221,30 @@ def _deep_contains(actual: Any, expected: Any) -> bool:
         "wow"                                  # 대소문자 구분, 키+값 검색
         {"text": "wow", "ignore_case": True}   # 옵션 지정
         {"text": "wow", "keys": False}         # 값만 검색
+
+    검색어(needle)는 문자열이어야 한다. 잘못된 조건(needle 누락/비문자열,
+    오타 난 옵션 키)은 **데이터와 무관하게** 즉시 ValueError 로 알린다
+    (조용히 False 를 돌려주어 버그를 숨기지 않는다).
     """
-    if actual is MISSING:
-        return False
+    # needle/옵션은 데이터(actual)와 무관하므로 MISSING 검사보다 먼저 검증한다.
     if isinstance(expected, Mapping):
+        unknown = set(expected) - {"text", *_DEEP_CONTAINS_OPTS}
+        if unknown:
+            raise ValueError(f"deep_contains: 알 수 없는 옵션 키 {sorted(unknown)} "
+                             f"(허용: 'text', {list(_DEEP_CONTAINS_OPTS)})")
+        if "text" not in expected:
+            raise ValueError("deep_contains: 옵션 dict 에는 'text' 키가 필요합니다")
         needle = expected["text"]
-        opts = {k: expected[k] for k in ("keys", "values", "ignore_case")
-                if k in expected}
+        opts = {k: expected[k] for k in _DEEP_CONTAINS_OPTS if k in expected}
     else:
         needle, opts = expected, {}
+    if not isinstance(needle, str):
+        raise ValueError(
+            f"deep_contains: 검색어는 문자열이어야 합니다 (받은 값: {needle!r}). "
+            f"value 로 검색할 문자열 또는 {{'text': ...}} 형태를 지정하세요."
+        )
+    if actual is MISSING:
+        return False
     return bool(find_text(actual, needle, **opts))
 
 

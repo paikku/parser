@@ -452,12 +452,68 @@ class TestDeepContainsOperator(unittest.TestCase):
         self.assertTrue(v.is_valid(self.DOC))
         self.assertFalse(v.is_valid({"data": "wow"}))     # dict 아님 -> 탈락
 
-    def test_shares_core_with_struct_contains_text(self):
-        # 두 진입점이 같은 코어(find_text)를 쓰므로 결과가 일관적
+    def test_shares_core_with_struct_contains_text_on_dict(self):
+        # 대상이 dict 일 때는 두 진입점이 같은 코어(find_text)로 일치.
         found, _ = struct_contains_text(self.DOC, "wow")
         via_op = validate(self.DOC, [
             {"path": "$.data", "op": "deep_contains", "value": "wow"}])
         self.assertEqual(found, via_op)
+
+    def test_diverges_on_non_dict(self):
+        # struct_contains_text 는 dict 가드가 있어 배열/문자열엔 (False, []);
+        # deep_contains 는 가드가 없어 검색한다. 의도된 차이.
+        found, _ = struct_contains_text({"data": ["wow"]}, "wow")
+        self.assertFalse(found)
+        self.assertTrue(validate({"data": ["wow"]}, [
+            {"path": "$.data", "op": "deep_contains", "value": "wow"}]))
+
+    # ── 잘못된 조건은 데이터와 무관하게 즉시 ValueError (조용한 실패 금지) ──
+    def test_option_dict_missing_text_raises(self):
+        with self.assertRaises(ValueError):
+            validate(self.DOC, [{"path": "$.data", "op": "deep_contains",
+                                 "value": {"ignore_case": True}}])
+
+    def test_omitted_value_raises(self):
+        # Condition.value 는 True 로 기본값 -> 문자열 아님 -> ValueError
+        with self.assertRaises(ValueError):
+            validate(self.DOC, [{"path": "$.data", "op": "deep_contains"}])
+
+    def test_non_string_needle_raises(self):
+        with self.assertRaises(ValueError):
+            validate(self.DOC, [{"path": "$.data", "op": "deep_contains",
+                                 "value": 5}])
+
+    def test_unknown_option_key_raises(self):
+        with self.assertRaises(ValueError):
+            validate(self.DOC, [{"path": "$.data", "op": "deep_contains",
+                                 "value": {"text": "wow", "ignorecase": True}}])
+
+    def test_error_is_data_independent(self):
+        # path 가 MISSING 이어도(actual 없음) 동일하게 raise 해야 한다.
+        with self.assertRaises(ValueError):
+            validate(self.DOC, [{"path": "$.nope", "op": "deep_contains",
+                                 "value": {"ignore_case": True}}])
+
+
+class TestFindTextExtras(unittest.TestCase):
+    def test_ignore_case_casefold(self):
+        # lower() 가 아닌 casefold() 라서 독일어 ß 도 매칭.
+        hits = find_text({"k": "Straße"}, "STRASSE", ignore_case=True)
+        self.assertEqual([m.value for m in hits], ["Straße"])
+
+    def test_values_false_searches_keys_only(self):
+        # values=False 분기 커버 (문자열 값은 무시, 키만).
+        hits = find_text({"wowKey": "wow"}, "wow", values=False)
+        self.assertEqual([(m.where, m.value) for m in hits], [("key", "wowKey")])
+
+    def test_numeric_and_bool_leaves_not_matched(self):
+        # int/bool 은 텍스트로 변환하지 않으므로 매칭 대상이 아니다.
+        self.assertEqual(find_text({"n": 42000, "b": True}, "42"), [])
+        self.assertEqual(find_text({"n": 42000, "b": True}, "True"), [])
+
+    def test_array_index_paths(self):
+        hits = find_text({"a": ["x", "wowza"]}, "wow")
+        self.assertEqual([m.path for m in hits], ["$.a[1]"])
 
 
 if __name__ == "__main__":
