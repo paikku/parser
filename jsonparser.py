@@ -269,6 +269,10 @@ class UnknownVersionError(ValueError):
     """어느 버전 프로필에도 매칭되지 않는 JSON."""
 
 
+class AmbiguousVersionError(ValueError):
+    """동일하게 구체적인 버전이 둘 이상 매칭되어 하나로 결정할 수 없음."""
+
+
 @dataclass
 class VersionProfile:
     """하나의 버전을 기술한다.
@@ -291,6 +295,13 @@ class VersionProfile:
         """이 JSON 이 이 버전으로 판정되는가."""
         return self.detect.is_valid(data)
 
+    def specificity(self) -> int:
+        """구체성 점수. detect 조건 개수 = 많이 맞을수록 더 구체적인 버전.
+
+        예: A(=$.a 만) < B(=$.a + $.a.a). B 는 A 를 포함하므로 더 구체적.
+        """
+        return len(self.detect.conditions)
+
     def normalize(self, data: Any) -> dict[str, Any]:
         """버전별 경로로 값을 뽑아 통합 스키마 dict 로 반환."""
         return extract(data, self.fields)
@@ -310,9 +321,10 @@ class VersionedParser:
 
     Parameters
     ----------
-    profiles      : VersionProfile 목록. 등록 순서가 곧 판별 우선순위.
+    profiles      : VersionProfile 목록. **등록 순서와 무관**하게 판별됨
+                    (가장 구체적인 버전 우선). 새 버전은 아무 위치에 추가해도 된다.
     version_field : (선택) 명시적 버전 필드 JSONPath. 그 값이 어떤 프로필 name 과
-                    같으면 detect 를 건너뛰고 즉시 채택하는 지름길.
+                    같으면 구조 판별을 건너뛰고 즉시 채택하는 지름길.
     """
 
     profiles: list[VersionProfile] = field(default_factory=list)
@@ -327,8 +339,10 @@ class VersionedParser:
         """JSON 을 분석해 해당 VersionProfile 을 반환한다.
 
         1) version_field 가 있고 그 값이 어떤 프로필 name 과 일치하면 즉시 채택.
-        2) 아니면 등록 순서대로 detect 가 통과하는 첫 프로필 채택.
-        둘 다 실패하면 UnknownVersionError.
+        2) 아니면 detect 가 통과하는 프로필 중 **가장 구체적인(조건이 가장 많이
+           맞는) 것** 을 채택. 등록 순서는 영향을 주지 않는다.
+        매칭이 없으면 UnknownVersionError, 가장 구체적인 버전이 동점이면
+        AmbiguousVersionError.
         """
         if self.version_field is not None:
             marker = get_path(data, self.version_field, MISSING)
@@ -336,12 +350,20 @@ class VersionedParser:
                 for p in self.profiles:
                     if p.name == marker:
                         return p
-        for p in self.profiles:
-            if p.matches(data):
-                return p
-        raise UnknownVersionError(
-            f"어느 버전에도 매칭되지 않음 (후보: {[p.name for p in self.profiles]})"
-        )
+
+        matches = [p for p in self.profiles if p.matches(data)]
+        if not matches:
+            raise UnknownVersionError(
+                f"어느 버전에도 매칭되지 않음 (후보: {[p.name for p in self.profiles]})"
+            )
+        best = max(p.specificity() for p in matches)
+        top = [p for p in matches if p.specificity() == best]
+        if len(top) > 1:
+            raise AmbiguousVersionError(
+                f"동일하게 구체적인 버전이 여럿 매칭됨 "
+                f"(조건 {best}개): {[p.name for p in top]}"
+            )
+        return top[0]
 
     def parse(self, data: Any) -> ParseResult:
         """판별 → (필수조건 검증) → 정규화 후 ParseResult 반환."""
@@ -380,6 +402,7 @@ __all__ = [
     "validate",
     "extract",
     "UnknownVersionError",
+    "AmbiguousVersionError",
     "VersionProfile",
     "ParseResult",
     "VersionedParser",

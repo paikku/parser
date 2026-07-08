@@ -3,6 +3,7 @@
 import unittest
 
 from jsonparser import (
+    AmbiguousVersionError,
     Condition,
     JsonPathError,
     UnknownVersionError,
@@ -267,6 +268,49 @@ class TestVersioned(unittest.TestCase):
             fields={"user_id": "$.user.id"},
         ))
         self.assertEqual(parser.parse(V1_JSON).data, {"user_id": "U1"})
+
+
+# 포함관계가 있는 버전들 (A ⊂ B, A ⊂ C) — 등록 순서 무관성 검증 --------------
+def _nested_profiles():
+    A = VersionProfile("A", detect=Validator().require("$.a"),
+                       fields={"a": "$.a"})
+    B = VersionProfile("B", detect=Validator().require("$.a").require("$.a.a"),
+                       fields={"a": "$.a", "aa": "$.a.a"})
+    C = VersionProfile("C", detect=Validator().require("$.a", "eq", "C").require("$.E"),
+                       fields={"a": "$.a", "e": "$.E"})
+    return A, B, C
+
+
+class TestSpecificity(unittest.TestCase):
+    DOC_A = {"a": 1}
+    DOC_B = {"a": {"a": 2}}
+    DOC_C = {"a": "C", "E": 99}
+
+    def _check(self, parser):
+        self.assertEqual(parser.resolve(self.DOC_A).name, "A")
+        self.assertEqual(parser.resolve(self.DOC_B).name, "B")
+        self.assertEqual(parser.resolve(self.DOC_C).name, "C")
+
+    def test_order_independent_forward(self):
+        A, B, C = _nested_profiles()
+        self._check(VersionedParser([A, B, C]))
+
+    def test_order_independent_reverse(self):
+        A, B, C = _nested_profiles()
+        self._check(VersionedParser([C, B, A]))
+
+    def test_most_specific_wins_not_first(self):
+        # A 를 먼저 등록해도 B 짜리 JSON 은 B 로 (조건이 더 많이 맞음).
+        A, B, C = _nested_profiles()
+        self.assertEqual(VersionedParser([A, B]).resolve(self.DOC_B).name, "B")
+
+    def test_ambiguous_raises(self):
+        # 동일하게 구체적인(조건 1개씩) 두 버전이 같은 JSON 에 매칭.
+        X = VersionProfile("X", detect=Validator().require("$.a"), fields={"a": "$.a"})
+        Y = VersionProfile("Y", detect=Validator().require("$.b"), fields={"b": "$.b"})
+        parser = VersionedParser([X, Y])
+        with self.assertRaises(AmbiguousVersionError):
+            parser.resolve({"a": 1, "b": 2})
 
 
 if __name__ == "__main__":

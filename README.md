@@ -117,14 +117,38 @@ parser.parse({"unknown": "shape"})   # -> UnknownVersionError
 
 - **`VersionProfile`** — 버전 하나. `detect`(이 버전인지 판정하는 `Validator`),
   `fields`(버전별 논리명→JSONPath 매핑 = `extract` 매핑), `require`(선택, 이 버전 필수조건).
-- **`VersionedParser`** — 프로필 목록(등록 순서 = 우선순위)과 선택적 `version_field`.
+- **`VersionedParser`** — 프로필 목록과 선택적 `version_field`.
   - `resolve(data)` : `version_field` 값이 프로필 `name` 과 맞으면 즉시 채택, 아니면
-    등록 순서대로 `detect` 첫 통과 프로필 채택. 실패 시 `UnknownVersionError`.
+    `detect` 통과 프로필 중 **가장 구체적인(조건이 가장 많이 맞는) 것** 채택.
+    **등록 순서 무관.** 매칭 없으면 `UnknownVersionError`, 동점이면 `AmbiguousVersionError`.
   - `parse(data)` : 판별 → `require` 검증 → 정규화 → `ParseResult(version, data)`.
+
+### 버전을 점진적으로 늘려갈 때 (포함관계)
+
+버전이 서로를 포함하는 형태로 계속 추가되는 경우 — 예를 들어
+`A`(=`$.a` 존재) → `B`(=`$.a` + `$.a.a`) → `C`(=`$.a=='C'` + `$.E`) — 각 버전을
+`VersionProfile` 로 선언만 하면 된다. `B`·`C` 는 `A` 의 조건을 포함하지만,
+`resolve` 는 **가장 구체적인 버전**을 고르므로 등록 순서에 상관없이 올바르게 판별한다.
+
+```python
+parser = VersionedParser([
+    VersionProfile("A", detect=Validator().require("$.a"), fields={"a": "$.a"}),
+    VersionProfile("B", detect=Validator().require("$.a").require("$.a.a"),
+                   fields={"a": "$.a", "aa": "$.a.a"}),
+    VersionProfile("C", detect=Validator().require("$.a", "eq", "C").require("$.E"),
+                   fields={"a": "$.a", "e": "$.E"}),
+])
+parser.resolve({"a": 1}).name              # "A"
+parser.resolve({"a": {"a": 2}}).name       # "B"  (A 도 매칭되지만 더 구체적인 B)
+parser.resolve({"a": "C", "E": 9}).name    # "C"
+```
+
+새 버전은 목록 아무 위치에 추가하면 되고, 두 버전이 똑같이 구체적인데 동시에 매칭되면
+`AmbiguousVersionError` 로 알려주므로 조건 설계 실수를 조기에 잡을 수 있다.
 
 ## 실행
 
 ```bash
 python3 example.py            # 데모
-python3 -m unittest -v        # 테스트 (45개)
+python3 -m unittest -v        # 테스트 (49개)
 ```

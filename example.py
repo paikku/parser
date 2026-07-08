@@ -120,6 +120,22 @@ def main() -> None:
     except UnknownVersionError as exc:
         print("unknown  :", exc)
 
+    # ── 기능 5: 포함관계 버전, 등록 순서 무관 (가장 구체적인 것 우선) ─────
+    print("\n== 포함관계 버전 (순서 무관) ==")
+    # A: a 만 / B: a + a.a / C: a=='C' 이면서 E 존재.  B·C 는 A 를 포함한다.
+    incremental = VersionedParser([
+        VersionProfile("A", detect=Validator().require("$.a"),
+                       fields={"a": "$.a"}),
+        VersionProfile("B", detect=Validator().require("$.a").require("$.a.a"),
+                       fields={"a": "$.a", "aa": "$.a.a"}),
+        VersionProfile("C", detect=Validator().require("$.a", "eq", "C").require("$.E"),
+                       fields={"a": "$.a", "e": "$.E"}),
+    ])
+    for label, doc in [("a만", {"a": 1}),
+                       ("a+a.a", {"a": {"a": 2}}),
+                       ("a=='C'+E", {"a": "C", "E": 99})]:
+        print(f"  {label:12s} -> {incremental.resolve(doc).name}")  # A 먼저 등록됐어도 B/C 로
+
 
 if __name__ == "__main__":
     main()
