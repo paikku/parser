@@ -11,9 +11,12 @@ from jsonparser import (
     UnknownTypeError,
     Validator,
     extract,
+    find_text,
     get_all,
     get_path,
     has_path,
+    is_struct,
+    struct_contains_text,
     validate,
 )
 
@@ -342,6 +345,66 @@ class TestJsonStringInput(unittest.TestCase):
 
     def test_bytes_input(self):
         self.assertEqual(get_path(self.RAW.encode(), "$.user.id"), "U1")
+
+
+class TestStructContainsText(unittest.TestCase):
+    DOC = {
+        "data": {
+            "title": "this is WOW",
+            "nested": {"wow_flag": True},
+            "tags": ["ok", "wowza"],
+            "n": 5,
+        }
+    }
+
+    def test_is_struct(self):
+        self.assertTrue(is_struct(self.DOC))                 # 기본 $.data
+        self.assertFalse(is_struct({"data": "x"}))
+        self.assertFalse(is_struct({"data": [1, 2]}))
+        self.assertFalse(is_struct({}))                      # 매칭 없음
+
+    def test_found_keys_and_values(self):
+        # 기본값은 대소문자 구분 -> 대문자 "WOW" 는 매칭되지 않는다.
+        found, hits = struct_contains_text(self.DOC, "wow")
+        self.assertTrue(found)
+        got = {(m.path, m.where, m.value) for m in hits}
+        self.assertEqual(got, {
+            ("$.data.nested.wow_flag", "key", "wow_flag"),
+            ("$.data.tags[1]", "value", "wowza"),
+        })
+
+    def test_ignore_case(self):
+        found, hits = struct_contains_text(self.DOC, "wow", ignore_case=True)
+        paths = {m.path for m in hits}
+        self.assertIn("$.data.title", paths)                 # 대문자 WOW 도 매칭
+        self.assertEqual(paths, {
+            "$.data.title", "$.data.nested.wow_flag", "$.data.tags[1]",
+        })
+
+    def test_values_only(self):
+        found, hits = struct_contains_text(self.DOC, "wow", keys=False)
+        self.assertTrue(all(m.where == "value" for m in hits))
+
+    def test_not_a_struct(self):
+        self.assertEqual(struct_contains_text({"data": "wow"}, "wow"), (False, []))
+        self.assertEqual(struct_contains_text({}, "wow"), (False, []))
+
+    def test_custom_expr(self):
+        doc = {"payload": {"msg": "wow!"}}
+        found, hits = struct_contains_text(doc, "wow", expr="$.payload")
+        self.assertTrue(found)
+        self.assertEqual(hits[0].path, "$.payload.msg")
+
+    def test_json_string_input(self):
+        import json
+        self.assertTrue(struct_contains_text(json.dumps(self.DOC), "wow")[0])
+
+    def test_not_found(self):
+        self.assertEqual(struct_contains_text(self.DOC, "zzz"), (False, []))
+
+    def test_find_text_standalone(self):
+        hits = find_text({"a": {"b": "wow"}}, "wow")
+        self.assertEqual([(m.path, m.value) for m in hits], [("$.a.b", "wow")])
 
 
 if __name__ == "__main__":
