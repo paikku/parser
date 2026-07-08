@@ -10,6 +10,7 @@ from jsonparser import (
     extract,
     get_path,
     has_path,
+    struct_contains_text,
     validate,
 )
 
@@ -72,6 +73,19 @@ def main() -> None:
         {"path": "$.order.status", "op": "eq", "value": "paid"},
     ], logic="or")
     print("OR 검증  :", any_ok)
+
+    # (E) deep_contains: struct 하위(키+값) 어디든 부분문자열이 있는가.
+    #     - contains 는 최상위 멤버십만; deep_contains 는 깊이 무관 + 키 이름까지.
+    print("마우스 포함:", validate(sample, [
+        {"path": "$.order", "op": "deep_contains", "value": "마우스"},
+    ]))
+    print("sku 키 존재(대소문자 무시):", validate(sample, [
+        {"path": "$.order", "op": "deep_contains",
+         "value": {"text": "SKU", "ignore_case": True}},
+    ]))
+    # 값 위치까지 알고 싶으면 struct_contains_text (동일 코어 재사용)
+    found, hits = struct_contains_text(sample, "electronics", expr="$.order")
+    print("electronics 위치:", found, [(m.path, m.where) for m in hits])
 
     # ── 기능 3: 여러 path -> 하나의 객체 ────────────────────────────
     print("\n== 추출 ==")

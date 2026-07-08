@@ -107,8 +107,122 @@ def has_path(data: Any, expr: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# 문자열 검색 primitive (재귀 부분문자열)
+# ---------------------------------------------------------------------------
+# 검증(deep_contains 연산자)·조회(struct_contains_text)가 공통으로 재사용하는
+# 단일 코어. 중첩 struct/배열을 재귀 순회하며 부분문자열을 찾는다.
+
+@dataclass(frozen=True)
+class TextMatch:
+    """중첩 구조 안에서 찾은 문자열 매칭 한 건.
+
+    Parameters
+    ----------
+    path  : 매칭 위치의 점 경로 (예: "$.data.title", "$.data.tags[0]").
+    where : "key"(dict 키 이름에서 매칭) 또는 "value"(문자열 값에서 매칭).
+    value : 매칭된 실제 문자열 (키 이름 또는 값).
+    """
+
+    path: str
+    where: str
+    value: str
+
+
+def find_text(obj: Any, needle: str, *, keys: bool = True, values: bool = True,
+              ignore_case: bool = False, base: str = "$") -> list[TextMatch]:
+    """중첩 struct/배열을 재귀 순회하며 needle 을 **부분 문자열**로 포함한
+    dict 키 이름과 문자열 값을 모두 찾아 리스트로 반환한다.
+
+    Parameters
+    ----------
+    keys / values : 각각 키 이름 / 문자열 값을 검사 대상에 포함할지 여부.
+    ignore_case   : True 면 대소문자 무시.
+    base          : 매칭 경로의 접두사 (기본 "$").
+    """
+    target = needle.lower() if ignore_case else needle
+
+    def hit(text: str) -> bool:
+        return target in (text.lower() if ignore_case else text)
+
+    out: list[TextMatch] = []
+
+    def walk(node: Any, path: str) -> None:
+        if isinstance(node, Mapping):
+            for k, v in node.items():
+                child = f"{path}.{k}"
+                if keys and isinstance(k, str) and hit(k):
+                    out.append(TextMatch(child, "key", k))
+                walk(v, child)
+        elif isinstance(node, (list, tuple)):
+            for i, v in enumerate(node):
+                walk(v, f"{path}[{i}]")
+        elif values and isinstance(node, str) and hit(node):
+            out.append(TextMatch(path, "value", node))
+
+    walk(obj, base)
+    return out
+
+
+def is_struct(data: Any, expr: str = "$.data") -> bool:
+    """expr 위치의 값이 struct(dict)인지 판정한다.
+
+    매칭이 없거나 dict 가 아니면 False.
+    """
+    return isinstance(get_path(data, expr, MISSING), dict)
+
+
+def struct_contains_text(data: Any, needle: str, expr: str = "$.data",
+                         **kwargs: Any) -> tuple[bool, list[TextMatch]]:
+    """expr 값이 struct 이면 그 안에서 needle 문자열을 검색한다.
+
+    반환값 ``(found, matches)``:
+        found   : expr 이 struct 이면서 needle 을 하나라도 포함하면 True.
+                  struct 가 아니면 항상 False.
+        matches : 매칭된 TextMatch 리스트 (struct 아니면 빈 리스트).
+
+    ``keys`` / ``values`` / ``ignore_case`` 등 추가 옵션은 find_text 로 전달된다.
+    struct 인지 신경쓰지 않고 bool 만 필요하면 검증 DSL 의 ``deep_contains``
+    연산자를 써도 된다 (동일 코어 find_text 재사용).
+
+    예::
+
+        found, hits = struct_contains_text(doc, "wow")   # 기본 $.data 대상
+        if found:
+            for m in hits:
+                print(m.path, m.where, m.value)
+    """
+    data = _ensure_obj(data)
+    struct = get_path(data, expr, MISSING)
+    if not isinstance(struct, dict):
+        return False, []
+    matches = find_text(struct, needle, base=expr, **kwargs)
+    return bool(matches), matches
+
+
+# ---------------------------------------------------------------------------
 # 기능 1: 검증
 # ---------------------------------------------------------------------------
+
+def _deep_contains(actual: Any, expected: Any) -> bool:
+    """actual(struct/배열/문자열) 하위 어디든 텍스트가 부분문자열로 있으면 True.
+
+    deep_contains 연산자의 구현. 코어는 find_text 를 그대로 재사용한다.
+    expected 는 검색어 문자열, 또는 옵션을 담은 dict::
+
+        "wow"                                  # 대소문자 구분, 키+값 검색
+        {"text": "wow", "ignore_case": True}   # 옵션 지정
+        {"text": "wow", "keys": False}         # 값만 검색
+    """
+    if actual is MISSING:
+        return False
+    if isinstance(expected, Mapping):
+        needle = expected["text"]
+        opts = {k: expected[k] for k in ("keys", "values", "ignore_case")
+                if k in expected}
+    else:
+        needle, opts = expected, {}
+    return bool(find_text(actual, needle, **opts))
+
 
 # 조건 연산자 테이블. (실제 값, 기대 값) -> bool
 _OPERATORS: dict[str, Callable[[Any, Any], bool]] = {
@@ -124,6 +238,9 @@ _OPERATORS: dict[str, Callable[[Any, Any], bool]] = {
     "contains": lambda actual, expected: (
         actual is not MISSING and hasattr(actual, "__contains__") and expected in actual
     ),
+    # 재귀 부분문자열 검색: struct/배열 하위 키·값 어디든 텍스트가 있으면 True.
+    # ("contains" 는 최상위 멤버십만; 이쪽은 깊이 무관 + 키 이름까지 검사)
+    "deep_contains": _deep_contains,
     "regex": lambda actual, expected: (
         isinstance(actual, str) and re.search(expected, actual) is not None
     ),
@@ -395,95 +512,6 @@ class TypeClassifier:
                 f"{profile.require.explain(data)}"
             )
         return ClassifyResult(type=profile.name, data=profile.normalize(data))
-
-
-# ---------------------------------------------------------------------------
-# struct 안 문자열 검색 (substring)
-# ---------------------------------------------------------------------------
-
-def is_struct(data: Any, expr: str = "$.data") -> bool:
-    """expr 위치의 값이 struct(dict)인지 판정한다.
-
-    매칭이 없거나 dict 가 아니면 False.
-    """
-    return isinstance(get_path(data, expr, MISSING), dict)
-
-
-@dataclass(frozen=True)
-class TextMatch:
-    """중첩 구조 안에서 찾은 문자열 매칭 한 건.
-
-    Parameters
-    ----------
-    path  : 매칭 위치의 점 경로 (예: "$.data.title", "$.data.tags[0]").
-    where : "key"(dict 키 이름에서 매칭) 또는 "value"(문자열 값에서 매칭).
-    value : 매칭된 실제 문자열 (키 이름 또는 값).
-    """
-
-    path: str
-    where: str
-    value: str
-
-
-def find_text(obj: Any, needle: str, *, keys: bool = True, values: bool = True,
-              ignore_case: bool = False, base: str = "$") -> list[TextMatch]:
-    """중첩 struct/배열을 재귀 순회하며 needle 을 **부분 문자열**로 포함한
-    dict 키 이름과 문자열 값을 모두 찾아 리스트로 반환한다.
-
-    Parameters
-    ----------
-    keys / values : 각각 키 이름 / 문자열 값을 검사 대상에 포함할지 여부.
-    ignore_case   : True 면 대소문자 무시.
-    base          : 매칭 경로의 접두사 (기본 "$").
-    """
-    target = needle.lower() if ignore_case else needle
-
-    def hit(text: str) -> bool:
-        return target in (text.lower() if ignore_case else text)
-
-    out: list[TextMatch] = []
-
-    def walk(node: Any, path: str) -> None:
-        if isinstance(node, Mapping):
-            for k, v in node.items():
-                child = f"{path}.{k}"
-                if keys and isinstance(k, str) and hit(k):
-                    out.append(TextMatch(child, "key", k))
-                walk(v, child)
-        elif isinstance(node, (list, tuple)):
-            for i, v in enumerate(node):
-                walk(v, f"{path}[{i}]")
-        elif values and isinstance(node, str) and hit(node):
-            out.append(TextMatch(path, "value", node))
-
-    walk(obj, base)
-    return out
-
-
-def struct_contains_text(data: Any, needle: str, expr: str = "$.data",
-                         **kwargs: Any) -> tuple[bool, list[TextMatch]]:
-    """expr 값이 struct 이면 그 안에서 needle 문자열을 검색한다.
-
-    반환값 ``(found, matches)``:
-        found   : expr 이 struct 이면서 needle 을 하나라도 포함하면 True.
-                  struct 가 아니면 항상 False.
-        matches : 매칭된 TextMatch 리스트 (struct 아니면 빈 리스트).
-
-    ``keys`` / ``values`` / ``ignore_case`` 등 추가 옵션은 find_text 로 전달된다.
-
-    예::
-
-        found, hits = struct_contains_text(doc, "wow")   # 기본 $.data 대상
-        if found:
-            for m in hits:
-                print(m.path, m.where, m.value)
-    """
-    data = _ensure_obj(data)
-    struct = get_path(data, expr, MISSING)
-    if not isinstance(struct, dict):
-        return False, []
-    matches = find_text(struct, needle, base=expr, **kwargs)
-    return bool(matches), matches
 
 
 # ---------------------------------------------------------------------------
