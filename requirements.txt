@@ -1,1 +1,5 @@
 jsonpath-ng>=1.6
+fastapi>=0.100        # items API (api.py + items/*/router.py)
+# 개발/실행 보조 (필수 아님):
+#   uvicorn  — API 서버 실행 (uvicorn api:app)
+#   pytest, httpx — 테스트 (httpx 는 fastapi TestClient 용)
