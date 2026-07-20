@@ -14,7 +14,6 @@ from typing import Any, Optional
 from jsonparser import TypeClassifier
 
 from .filt_data_struct import FiltDataStructV1
-from .scan_row_data_struct import ScanRowDataStructV1
 
 # ── 새 버전 추가 예시 (FILT_DATA_STRUCT@v2) ─────────────────────────────────
 # v2 는 detector 원소의 값 키가 wow -> wowScore 로 바뀐 버전이라고 하자.
@@ -62,7 +61,6 @@ from .scan_row_data_struct import ScanRowDataStructV1
 
 PROFILES = [
     FiltDataStructV1.build(),
-    ScanRowDataStructV1.build(),   # dump 아이템의 스캔 행 데이터 (items/dump 가 소비)
     # 새 버전: 위 예시처럼 새 파일에 서브클래스를 만들고 여기에 .build() 한 줄 추가.
 ]
 

@@ -12,9 +12,8 @@
 | 파일 | 역할 |
 |------|------|
 | `filt_data_struct.py` | `FiltDataStructV1` — 한 버전. detect(`build`) + 파싱(`normalize`) 을 통째로 소유 |
-| `scan_row_data_struct.py` | `ScanRowDataStructV1` — dump 아이템의 스캔 행 데이터 (`items/dump` 파이프라인이 소비) |
 | `registry.py` | `PROFILES` 목록 + `CLASSIFIER` + `parse_file()` — **버전 등록/디스패치 지점** |
-| `__init__.py` | 공개 API 재노출 (`parse_file`, `CLASSIFIER`, `PROFILES`, 프로필 클래스들) |
+| `__init__.py` | 공개 API 재노출 (`parse_file`, `CLASSIFIER`, `PROFILES`, `FiltDataStructV1`) |
 | `example_batch.py` | 폴더 배치 처리 예시 (추상화 없음) |
 
 ## 동작 모델
@@ -27,10 +26,7 @@
     `name=` 문자열이 곧 **버전 식별자**이자 `parse_file` 이 돌려주는 `kind`.
   - `normalize(self, data)` — 그 버전의 파싱을 **자유롭게** 구현. 코어의
     `find_text`/`get_path`/`get_all`/`extract`/`Validator` 를 직접 쓴다.
-    반환 스키마는 **프로필이 소유**한다 — FILT 계열은
-    `{"result": {...}, "xyz": {"x":[],"y":[],"z":[]}}`, SCAN_ROW 계열은
-    `{"value": {채널:[...]}, "xyz": {...}, "warnings": [...]}` (시각화 계약:
-    `value[k][i]` 가 좌표 `(x[i], z[i])` 의 측정값, 세 배열 길이 일치).
+    반환 스키마는 현재 `{"result": {...}, "xyz": {"x":[],"y":[],"z":[]}}`.
 - **헬퍼/공통 베이스는 일부러 없다.** "버전마다 무엇이 바뀔지"(노드 위치·이름·배열 키·
   필드명·구조)를 미리 못박지 않기 위함. 구조가 통째로 달라지는 버전은 자기 `normalize()`
   안에서 평범한 파이썬으로 처리하면 된다. 두 버전 이상이 실제로 코드를 중복하기 시작하면

@@ -1,4 +1,4 @@
-"""dump 아이템 테스트 — ddformat 디코더 · pipeline · API.
+"""dump 아이템 테스트 — ddformat 디코더 · extract 추출 · pipeline · API.
 
 실서버/실코퍼스 없이 돈다: 합성 `.dd` 바이트(스펙 규칙대로 인코딩 + 정식
 체크섬)와 합성 `.tdf`(ZIP) 픽스처가 전체 경로를 구동한다.
@@ -13,6 +13,9 @@ import pytest
 from items.dump.ddformat import (
     MAGIC, TRAILER_LEN, DecodeResult, decode_dd, detect_format,
     dd_trailer_ok, iter_tdf, trailer_checksum,
+)
+from items.dump.extract import (
+    AmbiguousVersionError, UnknownVersionError, dispatch,
 )
 from items.dump.pipeline import find_tdf_files, run_tdf, run_tree
 
@@ -149,6 +152,85 @@ def test_text_format_detected_and_skipped():
     assert detect_format(text) == "text"
     res = decode_dd(text, name="note.dd")
     assert res.tree == {} and not res.ok
+
+
+# ── extract: 순수 파이썬 추출 (jsonparser 미사용) ───────────────────────
+
+
+def scan_tree(marker="IFEU_SCAN_ROW_DATA_STRUCT_007"):
+    """디코드 결과 상당의 트리 픽스처"""
+    return {marker: {
+        "detector": [
+            {"name": "det_a", "intensities": [10, 20, 30]},
+            {"name": "det_b", "intensities": [1.5, 2.5, 3.5]},
+            "not-a-dict",                       # 이형 원소는 스킵
+            {"name": "no_intensities"},         # 조건 미달 스킵
+        ],
+        "ws_positions": [
+            {"x": 0.1, "y": 0.0, "z": 5.0},
+            {"x": 0.2, "y": 0.0, "z": 5.5},
+            {"x": 0.3, "y": 0.0, "z": 6.0},
+        ],
+    }}
+
+
+def test_dispatch_scan_row_basic():
+    kind, out = dispatch(scan_tree())
+    assert kind == "SCAN_ROW_DATA_STRUCT@v1"
+    # 시각화 계약: value = 채널별 배열, xyz = 좌표 배열, 길이 일치
+    assert out["value"] == {"det_a": [10, 20, 30], "det_b": [1.5, 2.5, 3.5]}
+    assert out["xyz"] == {"x": [0.1, 0.2, 0.3], "y": [0.0, 0.0, 0.0],
+                          "z": [5.0, 5.5, 6.0]}
+    assert out["warnings"] == []
+
+
+def test_dispatch_finds_nested_marker_node():
+    """마커 노드가 중첩 깊이에 있어도 재귀 워킹으로 찾는다."""
+    kind, out = dispatch({"outer": {"wrap": scan_tree()}})
+    assert kind == "SCAN_ROW_DATA_STRUCT@v1"
+    assert out["value"]["det_a"] == [10, 20, 30]
+
+
+def test_length_mismatch_warns_but_keeps_channel():
+    tree = scan_tree()
+    tree["IFEU_SCAN_ROW_DATA_STRUCT_007"]["detector"].append(
+        {"name": "short", "intensities": [9]})
+    _, out = dispatch(tree)
+    assert out["value"]["short"] == [9]           # 채널은 유지 (부분 성공)
+    assert any("길이 불일치" in w and "short" in w for w in out["warnings"])
+
+
+def test_non_list_intensities_dropped_with_warning():
+    tree = scan_tree()
+    tree["IFEU_SCAN_ROW_DATA_STRUCT_007"]["detector"].append(
+        {"name": "scalar", "intensities": 42})
+    _, out = dispatch(tree)
+    assert "scalar" not in out["value"]
+    assert any("scalar" in w for w in out["warnings"])
+
+
+def test_marker_missing_is_unknown():
+    """구조는 같아도 마커 키가 없으면 매칭 없음 — 조용한 빈 결과 금지."""
+    tree = scan_tree(marker="SOME_OTHER_NODE")
+    with pytest.raises(UnknownVersionError):
+        dispatch(tree)
+
+
+def test_ambiguous_version_raises():
+    """detect 가 겹치는 버전 정의는 명시적 오류로 드러난다 (정확히-1개-성립)."""
+    from items.dump import extract as ex
+
+    class FakeV2:
+        name = "FAKE@v2"
+        detect = staticmethod(lambda tree: True)
+        extract = staticmethod(lambda tree: {})
+
+    ex.VERSIONS.append(FakeV2)
+    try:
+        with pytest.raises(AmbiguousVersionError):
+            dispatch(scan_tree())
+    finally:
+        ex.VERSIONS.remove(FakeV2)
 
 
 # ── .tdf 픽스처 + pipeline ──────────────────────────────────────────────

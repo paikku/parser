@@ -11,12 +11,10 @@
 
 from .registry import CLASSIFIER, PROFILES, parse_file
 from .filt_data_struct import FiltDataStructV1
-from .scan_row_data_struct import ScanRowDataStructV1
 
 __all__ = [
     "parse_file",
     "CLASSIFIER",
     "PROFILES",
     "FiltDataStructV1",
-    "ScanRowDataStructV1",
 ]

@@ -1,19 +1,20 @@
 """dump 파이프라인 — .tdf → 디코드 → 버전 판별 → 시각화 레코드.
 
 순수 조립 계층: HTTP 도 파일 저장도 모른다. router(API)와 배치 스크립트가
-이 함수들을 공유한다.
+이 함수들을 공유한다. 디코드(ddformat)·추출(extract) 모두 stdlib 만 쓰므로
+이 폴더는 다른 프로젝트로 통째 이식 가능하다.
 
 레코드 계약 (시각화 입력과 필드 단위 일치):
     {
       "source":   "<tdf이름>::<dd이름>",     # 시각화 라벨
-      "kind":     "SCAN_ROW_DATA_STRUCT@v1", # 선택된 프로필 name
+      "kind":     "SCAN_ROW_DATA_STRUCT@v1", # 선택된 버전 name
       "value":    {채널: [값...]},            # 채널별 측정값 배열
       "xyz":      {"x": [...], "y": [...], "z": [...]},
-      "warnings": [...],                      # 디코드+파싱 경고 (부분 성공 기본)
+      "warnings": [...],                      # 디코드+추출 경고 (부분 성공 기본)
     }
 
-필터는 분류기가 담당한다: 스캔 데이터가 아닌 .dd(설정/기타 구조)는
-UnknownTypeError 로 자연 스킵되며, 스킵 사유는 DumpReport.skipped 에 남는다.
+필터는 버전 판별이 담당한다: 스캔 데이터가 아닌 .dd(설정/기타 구조)는
+UnknownVersionError 로 자연 스킵되며, 스킵 사유는 DumpReport.skipped 에 남는다.
 """
 
 from __future__ import annotations
@@ -22,10 +23,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from jsonparser import AmbiguousTypeError, UnknownTypeError
-from parsers import parse_file
-
 from .ddformat import decode_dd, iter_tdf
+from .extract import AmbiguousVersionError, UnknownVersionError, dispatch
 
 
 @dataclass
@@ -93,14 +92,13 @@ def run_tdf(tdf_path: str | Path, dd_filter: str | None = None) -> DumpReport:
             })
             continue
 
-        # 디코드 tree 를 {"data": tree} 로 감싸 기존 프로필 관례($.data..)에 태운다.
         try:
-            kind, out = parse_file({"data": decoded.tree})
-        except UnknownTypeError:
-            report.skipped.append({"dd": dd_name, "reason": "등록된 버전과 매칭 없음"})
+            kind, out = dispatch(decoded.tree)
+        except UnknownVersionError as e:
+            report.skipped.append({"dd": dd_name, "reason": str(e)})
             continue
-        except AmbiguousTypeError as e:
-            report.skipped.append({"dd": dd_name, "reason": f"버전 판별 모호: {e}"})
+        except AmbiguousVersionError as e:
+            report.skipped.append({"dd": dd_name, "reason": str(e)})
             continue
 
         report.records.append(DumpRecord(
