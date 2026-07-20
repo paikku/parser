@@ -1,7 +1,7 @@
 # Repository map (read this first, then open only what you need)
 
-이 저장소는 **두 개의 독립 레이어**로 나뉩니다. 작업 대상에 해당하는 쪽만 읽으세요 —
-반대쪽 파일을 컨텍스트에 올릴 필요가 없습니다.
+이 저장소는 **세 개의 독립 레이어**로 나뉩니다. 작업 대상에 해당하는 쪽만 읽으세요 —
+다른 레이어 파일을 컨텍스트에 올릴 필요가 없습니다.
 
 ## 레이어 1 — 파싱 코어 (범용 JSON 유틸리티)
 
@@ -18,8 +18,23 @@
 - **테스트:** `test_filt_parser.py`
 - 파일 종류/버전을 판별해 값을 추출하는 상위 레이어. 코어를 `from jsonparser import ...`
   로 **단방향** 소비합니다.
-- 파서 추가/수정 작업은 **`parsers/` 와 `test_filt_parser.py` 안에서 끝납니다.**
+- 파서 추가/수정 작업은 **`parsers/` 와 그 프로필의 테스트 스위트 안에서 끝납니다**
+  (FILT: `test_filt_parser.py`, SCAN_ROW: `test_scan_row_parser.py`).
   `jsonparser.py` 는 건드리지 않습니다.
+
+## 레이어 3 — 아이템 (원본 파일 → 시각화 레코드 + API)
+
+- **코드+문서:** `items/` 폴더 (각 하위 폴더 `__init__.py` 독스트링이 그 아이템의 문서).
+  앱 조립은 루트 `api.py`.
+- **테스트:** `test_item_dump.py` (아이템별 `test_item_<이름>.py`)
+- **한 아이템 = 한 폴더** (`items/<이름>/`). 그 아이템의 파일 포맷 지식(디코더),
+  "원본 파일 → 레코드" 조립(`pipeline.py`), HTTP 표면(`router.py`)을 통째로 소유합니다.
+  아이템 폴더끼리는 서로 import 하지 않습니다.
+- 현재 아이템: **dump** — FTP dump 세트의 `.tdf`(ZIP) 안 `.dd` 바이너리(TLV)를
+  디코드하고, `parsers/` 로 버전 판별·추출해 시각화 레코드
+  (`{source, kind, value, xyz, warnings}`)로 만듭니다. `.dd` 포맷 지식은
+  `items/dump/ddformat.py` 밖으로 새어나가지 않습니다 (포맷 연구는 decoder 저장소).
+- API 실행: `uvicorn api:app` (+ `DUMP_DATA_ROOT=<tdf 폴더>`).
 
 ## 작업별 라우팅
 
@@ -27,11 +42,16 @@
 |-----------|---------|-----------|
 | 코어 함수 사용법/시맨틱 확인 | `LLM.md` | — |
 | 코어 버그 수정/기능 추가 | `jsonparser.py`, `LLM.md` | `jsonparser.py`, `test_jsonparser.py`, (문서) `LLM.md`/`README.md` |
-| **새 파일 버전 파서 추가** | `parsers/README.md` | `parsers/` 새 파일 + `parsers/registry.py` 한 줄, `test_filt_parser.py` |
+| **새 파일 버전 파서 추가** | `parsers/README.md` | `parsers/` 새 파일 + `parsers/registry.py` 한 줄, 그 버전용 테스트 |
 | 폴더 배치 파싱 실행 | `parsers/README.md` | — (`python -m parsers.example_batch`) |
+| **새 아이템 추가** | `items/__init__.py`, `items/dump/` (본보기) | `items/<이름>/` 새 폴더 + (필요시) `parsers/` 프로필 + `api.py` 마운트 한 줄, `test_item_<이름>.py` |
+| dump 파이프라인/API 수정 | `items/dump/__init__.py` | `items/dump/`, `test_item_dump.py` |
 
 ## 불변 규칙
 
-- 의존은 **한 방향만**: `parsers/` → `jsonparser`. 코어가 `parsers/` 를 import 하지 않게 유지.
+- 의존은 **한 방향만**: `items/` → `parsers/` → `jsonparser`. 역방향 import 금지,
+  아이템 폴더끼리도 import 금지.
 - 새 파서 버전은 **기존 버전 코드를 수정하지 않고** 추가한다 (자세한 계약은 `parsers/README.md`).
-- 테스트는 두 스위트 모두 통과: `python -m pytest test_jsonparser.py test_filt_parser.py -q`.
+- 아이템 파일 포맷 지식은 그 아이템 폴더 안에만 둔다 (예: `.dd`/`.tdf` 는 `items/dump/` 만 안다).
+- 테스트는 전 스위트 통과:
+  `python -m pytest test_jsonparser.py test_filt_parser.py test_scan_row_parser.py test_item_dump.py -q`.
